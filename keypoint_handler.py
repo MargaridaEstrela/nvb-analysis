@@ -7,10 +7,10 @@ class KeypointHandler:
         self.data_person_0 = data[data['pose_id'] == 0].copy()
         self.data_person_1 = data[data['pose_id'] == 1].copy()
         self.epsilon = 1e-5      # Small non-zero value to prevent division by zero
-        self.f_min = 1.0         # Minimum cutoff frequency
-        self.beta = 0.001        # Speed coefficient
-        self.mean_alpha = 0.05   # Smoothing factor for EMA filter
-        self.correction = 0.05   # Threshold value for correction
+        self.f_min = 0.7         # Minimum cutoff frequency
+        self.beta = 0.0005        # Speed coefficient
+        self.mean_alpha = 0.03   # Smoothing factor for EMA filter
+        self.correction = 0.02   # Threshold value for correction
         self.speed_threshold = 0.1  # Speed threshold for correction
 
         # Baseline body proportions (from the anatomical image)

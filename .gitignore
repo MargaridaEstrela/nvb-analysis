@@ -164,3 +164,8 @@ cython_debug/
 .DS_Store
 /csv
 /figures
+/archive
+
+pose_landmarker_full.task
+pose_landmarker_heavy.task
+pose_landmarker.task

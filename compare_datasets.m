@@ -1,15 +1,20 @@
 close all;
 clear;
+clc;
 
 % Load the CSV files into MATLAB
-data1 = readtable('csv/processed.csv');
-data2 = readtable('csv/openpose_formatted.csv');
+data1 = readtable('archive/pipeline.csv');
+data2 = readtable('csv/pipeline.csv');
 
 frame_width = 1920;
 frame_height = 1080;
 data1.x = data1.x * frame_width;
 data1.y = data1.y * frame_height;
 data1.y = frame_height - data1.y; % invert Y
+
+data2.x = data2.x * frame_width;
+data2.y = data2.y * frame_height;
+data2.y = frame_height - data2.y; % invert Y
 
 % Extract unique persons and keypoints
 unique_persons = unique(data1.pose_id);
@@ -30,8 +35,8 @@ for i = 1:length(unique_persons)
         % Subplot for x-coordinate over frames
         subplot(2, 1, 1);
         hold on;
-        plot(data1_person.frame, data1_person.x, '-', 'DisplayName', 'MediaPipe');
-        plot(data2_person.frame, data2_person.x, '-', 'DisplayName', 'OpenPose');
+        plot(data1_person.frame, data1_person.x, '-', 'DisplayName', 'Pipeline Old');
+        plot(data2_person.frame, data2_person.x, '-', 'DisplayName', 'Pipeline');
         title(['X Coordinate Comparison for Keypoint ', num2str(keypoint), ' - Person ', num2str(person_id)]);
         xlabel('Frame');
         ylabel('X');
@@ -43,8 +48,8 @@ for i = 1:length(unique_persons)
         % Subplot for y-coordinate over frames
         subplot(2, 1, 2);
         hold on;
-        plot(data1_person.frame, data1_person.y, '-', 'DisplayName', 'MediaPipe');
-        plot(data2_person.frame, data2_person.y, '-', 'DisplayName', 'OpenPose');
+        plot(data1_person.frame, data1_person.y, '-', 'DisplayName', 'Pipeline Old');
+        plot(data2_person.frame, data2_person.y, '-', 'DisplayName', 'Pipeline');
         title(['Y Coordinate Comparison for Keypoint ', num2str(keypoint), ' - Person ', num2str(person_id)]);
         xlabel('Frame');
         ylabel('Y');
