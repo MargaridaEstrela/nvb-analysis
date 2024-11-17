@@ -26,6 +26,7 @@ function plot_depth_trend(data)
         % Plot the interpolated average depth
         if pose_ids(j) == 0
             plot(all_frames, avg_depth_interp, 'b-', 'LineWidth', 1.5);
+        else
             plot(all_frames, avg_depth_interp, 'r-', 'LineWidth', 1.5);
         end
     end
@@ -33,17 +34,19 @@ function plot_depth_trend(data)
     hold off;
 
     % Add title and labels
-    title('Depth Trend Over Frames for Each Person', 'FontSize', 12);
-    xlabel('Frame Index', 'FontSize', 10);
-    ylabel('Average Z Coordinate', 'FontSize', 10);
+    title('Depth Trend Over Frames for Each Person', 'FontSize', 14, 'Interpreter', 'none');
+    xlabel('Frame Index', 'FontSize', 12, 'Interpreter', 'none');
+    ylabel('Average Z Coordinate', 'FontSize', 12, 'Interpreter', 'none');
     
-    % Set a consistent Y-axis limit
+    % Set axis limits with padding
     ylim([global_min_depth - 0.1, global_max_depth + 0.1]);
     xlim([0, max(all_frames)]);
     
+    % Set font size for ticks and add grid
+    set(gca, 'FontSize', 10, 'TickLabelInterpreter', 'none');
     grid on;
-    set(gca, 'FontSize', 9);
-    legend('Person 0', 'Person 1', 'Location', 'northeast'); % Position legend inside top-right corner
+    
+    legend('Person 0', 'Person 1', 'Location', 'northeast', 'FontSize', 10);
 
     % Adjust plot margins to avoid clipping of labels
     set(gca, 'LooseInset', get(gca, 'TightInset') + [0.02, 0.02, 0.02, 0.02]);

@@ -3,6 +3,7 @@ clc; clear; close all;
 % Load data
 data = readtable('csv/pipeline.csv');
 
+frame_rate = 30;
 frame_width = 1920;
 frame_height = 1080;
 data.x = data.x * frame_width;
@@ -25,3 +26,4 @@ plot_keypoint_trajectories(data, frame_width, frame_height, keypoint_names, max_
 plot_x_coordinate_trend(data, frame_width, keypoint_names, max_keypoint_id);
 plot_y_coordinate_trend(data, frame_height, keypoint_names, max_keypoint_id);
 plot_depth_trend(data);
+plot_speed_trend(data, frame_rate, keypoint_names, max_keypoint_id);

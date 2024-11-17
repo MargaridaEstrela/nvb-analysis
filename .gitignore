@@ -166,6 +166,12 @@ cython_debug/
 /figures
 /archive
 
+# MediaPipe models
 pose_landmarker_full.task
 pose_landmarker_heavy.task
 pose_landmarker.task
+
+# Caffe models
+pretrained_ckpt
+res10_300x300_ssd_iter_140000.caffemodel
+deploy.prototxt.txt
