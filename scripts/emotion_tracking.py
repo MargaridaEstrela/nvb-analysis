@@ -31,11 +31,6 @@ while True:
     if not ret:
         break
 
-    # # Skip every 15 frames to make it lightweight
-    # if frame_number % 15 != 0:
-    #     frame_number += 1
-    #     continue
-
     # Get frame dimensions
     height, width, _ = frame.shape
 
