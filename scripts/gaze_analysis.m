@@ -12,7 +12,7 @@ firstFrame = readFrame(video);
 frame_width = 1920;
 frame_height = 1080;
 
-target_radius = 175; % Adjust as needed
+target_radius = 200; % Adjust as needed
 
 output_path = '../figures';
 if ~isfolder(output_path)
@@ -36,14 +36,19 @@ robot_marked = ginput(1);
 robot_position = [robot_marked(1), robot_marked(2)];
 close;
 
+%% Filter rows based on confidence
+data = data(data.confidence >= 0.8, :);
+
 %% Gaze Positions 
 % Initialize empty arrays to store gaze positions
 gaze_positions_0 = NaN(height(data), 2); % [gaze_x, gaze_y] for participant 0
 gaze_positions_1 = NaN(height(data), 2); % [gaze_x, gaze_y] for participant 1
 
 % Left eye landmarks:
-left_eye = [20, 21, 22, 23, 24, 25, 26, 27];
-right_eye = [48, 49, 50, 51, 52, 53, 54, 55];
+% left_eye = [20, 21, 22, 23, 24, 25, 26, 27];
+% right_eye = [48, 49, 50, 51, 52, 53, 54, 55];
+left_eye = [8, 11, 14, 17];
+right_eye = [36, 39, 42, 45];
 
 % Loop through each row to assign gaze based on face_id
 for i = 1:height(data)
@@ -206,15 +211,56 @@ for i = 1:length(gaze_classification_1)
     gaze_data_1.Gaze_Dir_Y(i) = gaze_direction_1(i, 2);
 end
 
-% Save CSV files per participant
-output_csv_0 = fullfile(output_path, '../results/gaze_0.csv');
-output_csv_1 = fullfile(output_path, '../results/gaze_1.csv');
+% Extract Facial Action Units
+au_columns = {'frame', 'AU01_r', 'AU02_r', 'AU04_r', 'AU05_r', 'AU06_r', ...
+              'AU07_r','AU09_r', 'AU10_r', 'AU12_r', 'AU14_r', 'AU15_r', ...
+              'AU17_r','AU20_r', 'AU23_r', 'AU25_r', 'AU26_r', 'AU45_r'};
 
-writetable(gaze_data_0, output_csv_0);
-writetable(gaze_data_1, output_csv_1);
+au_0 = data(data.face_id == 0, :);
+au_1 = data(data.face_id == 1, :);
+
+% Extract relevant columns
+au_0 = au_0(:, au_columns);
+au_1 = au_1(:, au_columns);
+
+% Save CSV files per participant
+gaze_csv_0 = fullfile(output_path, '../results/gaze_0.csv');
+gaze_csv_1 = fullfile(output_path, '../results/gaze_1.csv');
+au_csv_0 = fullfile(output_path, '../results/au_0.csv');
+au_csv_1 = fullfile(output_path, '../results/au_1.csv');
+data_output_csv = fullfile(output_path, '../results/openface.csv');
+
+writetable(gaze_data_0, gaze_csv_0);
+writetable(gaze_data_1, gaze_csv_1);
+writetable(au_0, au_csv_0);
+writetable(au_1, au_csv_1);
+writetable(data, data_output_csv);
 
 
 %% Results
+% Count gaze shifts
+gaze_target_0 = gaze_classification_0(1);
+gaze_shifts_0 = 0;
+for i = 2:length(gaze_classification_0)-1
+    if gaze_target_0 ~= gaze_classification_0(i)
+        gaze_target_0 = gaze_classification_0(i);
+        gaze_shifts_0 = gaze_shifts_0 + 1;
+    end
+end
+
+fprintf('Gaze Shifts 0: %s\n', num2str(gaze_shifts_0));
+
+gaze_target_1 = gaze_classification_1(1);
+gaze_shifts_1 = 0;
+for i = 2:length(gaze_classification_1)-1
+    if gaze_target_1 ~= gaze_classification_1(i)
+        gaze_target_1 = gaze_classification_1(i);
+        gaze_shifts_1 = gaze_shifts_1 + 1;
+    end
+end
+
+fprintf('Gaze Shifts 1: %s\n', num2str(gaze_shifts_1));
+
 % Plots Histograms
 fig1 = figure;
 fig1.Position = [100, 100, 1200, 500]; % Adjust figure size and position
