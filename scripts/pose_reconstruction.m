@@ -1,7 +1,7 @@
 clear; close all; clc;
 
 % Define path to stereo calibration parameters
-path = "../../../experimental_studies/matlab_calibrations/params/";
+path = "../../../experimental_studies/gaips/matlab_calibrations/params/";
 stereo_params = load_and_extract(path + "stereoParams.mat");
 
 % Compute projection matrices (P1, P2) and camera translation vectors (T1, T2)
@@ -15,8 +15,8 @@ image_width = 1920;
 image_height = 1080;
 
 % Load MediaPipe CSV keypoint data from both camera views
-data_cam1 = readmatrix('../../../experimental_studies/1/G1/mediapipe.csv'); % Change to the right path
-data_cam2 = readmatrix('../../../experimental_studies/1/G2/mediapipe.csv'); % Change to the right path
+data_cam1 = readmatrix('../../../experimental_studies/gaips/1/results/G1_mediapipe_fixed.csv'); % Change to the right path
+data_cam2 = readmatrix('../../../experimental_studies/gaips/1/results/G2_mediapipe_fixed.csv'); % Change to the right path
 
 % Reassign pose IDs based on horizontal location (left = 0, right = 1)
 data_cam1 = reassign_pose_ids_by_horizontal_position(data_cam1, image_width, image_height);
@@ -72,6 +72,13 @@ plot_skeletons(all_poses);
 
 
 %% ========================= Auxiliary Functions ==========================
+
+function out = load_and_extract(path)
+    tmp = load(path);
+    f = fieldnames(tmp);
+    out = tmp.(f{1});
+end
+
 
 function [P1, P2, T1, T2] = compute_camera_matrix(stereoParams)
     % Compute projection matrices for stereo triangulation

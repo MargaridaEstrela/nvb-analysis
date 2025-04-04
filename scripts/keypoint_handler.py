@@ -68,7 +68,6 @@ class KeypointHandler:
         return data
 
     def _apply_one_euro_filter(self, data):
-        tau = 1 / (2 * np.pi * self.f_min)
         filtered_data = data.copy()
 
         for landmark_id in data['landmark_id'].unique():
@@ -76,22 +75,35 @@ class KeypointHandler:
             x_filtered, y_filtered, z_filtered = [], [], []
 
             prev_x, prev_y, prev_z = landmark_data.iloc[0]['x'], landmark_data.iloc[0]['y'], landmark_data.iloc[0]['z']
-            prev_time = 0  
+            prev_time = landmark_data.iloc[0]['frame']  # Initialize with the first frame
 
             for i, row in landmark_data.iterrows():
                 current_time = row['frame']
-                dt = current_time - prev_time if prev_time != 0 else 1
+                dt = current_time - prev_time
                 if dt == 0:
-                    dt = self.epsilon
+                    dt = self.epsilon  # Avoid division by zero
 
+                # Rate of change
                 dx = abs(row['x'] - prev_x) / dt
                 dy = abs(row['y'] - prev_y) / dt
                 dz = abs(row['z'] - prev_z) / dt
 
-                alpha_x = 1 / (1 + tau * dx)
-                alpha_y = 1 / (1 + tau * dy)
-                alpha_z = 1 / (1 + tau * dz)
+                # Dynamic cutoff frequency
+                f_c_x = self.f_min + self.beta * dx
+                f_c_y = self.f_min + self.beta * dy
+                f_c_z = self.f_min + self.beta * dz
 
+                # Time constants
+                tau_x = 1 / (2 * np.pi * f_c_x)
+                tau_y = 1 / (2 * np.pi * f_c_y)
+                tau_z = 1 / (2 * np.pi * f_c_z)
+
+                # Smoothing factors
+                alpha_x = 1 / (1 + (dt / tau_x))
+                alpha_y = 1 / (1 + (dt / tau_y))
+                alpha_z = 1 / (1 + (dt / tau_z))
+
+                # Filtered values
                 new_x = alpha_x * row['x'] + (1 - alpha_x) * prev_x
                 new_y = alpha_y * row['y'] + (1 - alpha_y) * prev_y
                 new_z = alpha_z * row['z'] + (1 - alpha_z) * prev_z
@@ -100,6 +112,7 @@ class KeypointHandler:
                 y_filtered.append(new_y)
                 z_filtered.append(new_z)
 
+                # Update previous values
                 prev_x, prev_y, prev_z = new_x, new_y, new_z
                 prev_time = current_time
 
@@ -108,6 +121,7 @@ class KeypointHandler:
             filtered_data.loc[data['landmark_id'] == landmark_id, 'z'] = z_filtered
 
         return filtered_data
+
 
     def _apply_mean_filter(self, data):
         filtered_data = data.copy()
