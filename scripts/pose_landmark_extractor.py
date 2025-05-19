@@ -71,7 +71,7 @@ class PoseLandmarkExtractor:
         # CSV file setup with headers
         with open(self.output_csv, mode="w", newline="") as file:
             csv_writer = csv.writer(file)
-            csv_writer.writerow(["frame", "pose_id", "landmark_id", "x", "y", "z"])
+            csv_writer.writerow(["frame", "pose_id", "landmark_id", "x", "y", "z", "confidence"])
 
     def extract_landmarks(self):
         # Load Pose Landmarker
@@ -124,6 +124,7 @@ class PoseLandmarkExtractor:
                         landmark.x,
                         landmark.y,
                         landmark.z,
+                        landmark.visibility
                     ]
                 )
 

@@ -1,6 +1,7 @@
 % Define video file and output folder
 
-path = "../../../experimental_studies/gaips/matlab_calibrations/stereo_calibration/videos&frames/sync/";
+% path = "../../../experimental_studies/gaips/matlab_calibrations/stereo_calibration/videos&frames/sync/";
+path = "../../../experimental_studies/gaips/matlab_calibrations/colmap/";
 videoFile = path + "G3.MP4";
 outputFolder = path + "G3_frames";
 mkdir(outputFolder); % Create folder if it doesn't exist
@@ -10,7 +11,7 @@ v = VideoReader(videoFile);
 frameRate = v.FrameRate;
 
 frameIdx = 1;
-skipFrames = 30; % Number of frames to skip
+skipFrames = 1; % Number of frame  s to skip
 
 while hasFrame(v)
     img = readFrame(v); % Read the frame

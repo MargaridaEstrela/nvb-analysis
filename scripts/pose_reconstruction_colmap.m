@@ -22,9 +22,10 @@ image_width = 1920;
 image_height = 1080;
 
 % Load MediaPipe CSV keypoint data from both camera views
-data_cam1 = readmatrix('../../../experimental_studies/gaips/1/results/mediapipe/left_fixed.csv'); % Change to the right path
-data_cam2 = readmatrix('../../../experimental_studies/gaips/1/results/mediapipe/right_fixed.csv'); % Change to the right path
-data_cam3 = readmatrix('../../../experimental_studies/gaips/1/results/mediapipe/top_fixed.csv'); % Change to the right path
+path_results = '../../../experimental_studies/gaips/24/results/';
+data_cam1 = readmatrix(fullfile(path_results, 'mediapipe', 'left_fixed.csv'));
+data_cam2 = readmatrix(fullfile(path_results, 'mediapipe', 'right_fixed.csv'));
+data_cam3 = readmatrix(fullfile(path_results, 'mediapipe', 'top_fixed.csv'));
 
 % Convert normalized coords from MediaPipe to pixels
 data_cam1(:,4:5) = data_cam1(:,4:5) .* [image_width, image_height];
@@ -41,24 +42,49 @@ data_cam3(:,5) = image_height - data_cam3(:,5);
 pose0_3D = triangulate_pose_3view(0, data_cam1, data_cam2, data_cam3, P1, P2, P3);
 pose1_3D = triangulate_pose_3view(1, data_cam1, data_cam2, data_cam3, P1, P2, P3);
 
-
 %% Scale skeletons
 % Get 3D shoulder positions from reconstructed skeletons
 L_SHOULDER = 11;
 R_SHOULDER = 12;
 
-% Pose 0
-idx_L0 = pose0_3D(:,3) == L_SHOULDER;
-idx_R0 = pose0_3D(:,3) == R_SHOULDER;
-shoulder0 = vecnorm(pose0_3D(idx_L0, 4:6) - pose0_3D(idx_R0, 4:6), 2, 2);
+% --- Pose 0 ---
+L0 = pose0_3D(pose0_3D(:,3) == L_SHOULDER, :);
+R0 = pose0_3D(pose0_3D(:,3) == R_SHOULDER, :);
 
-% Pose 1
-idx_L1 = pose1_3D(:,3) == L_SHOULDER;
-idx_R1 = pose1_3D(:,3) == R_SHOULDER;
-shoulder1 = vecnorm(pose1_3D(idx_L1, 4:6) - pose1_3D(idx_R1, 4:6), 2, 2);
+common_frames_0 = intersect(L0(:,1), R0(:,1));
+shoulder0 = zeros(length(common_frames_0), 1);
 
-% Remove NaNs just in case
+for i = 1:length(common_frames_0)
+    f = common_frames_0(i);
+    pL = L0(L0(:,1)==f, 4:6);
+    pR = R0(R0(:,1)==f, 4:6);
+    if ~isempty(pL) && ~isempty(pR)
+        shoulder0(i) = norm(pL - pR);
+    else
+        shoulder0(i) = NaN;
+    end
+end
+
 shoulder0 = shoulder0(~isnan(shoulder0));
+
+% --- Pose 1 ---
+L1 = pose1_3D(pose1_3D(:,3) == L_SHOULDER, :);
+R1 = pose1_3D(pose1_3D(:,3) == R_SHOULDER, :);
+
+common_frames_1 = intersect(L1(:,1), R1(:,1));
+shoulder1 = zeros(length(common_frames_1), 1);
+
+for i = 1:length(common_frames_1)
+    f = common_frames_1(i);
+    pL = L1(L1(:,1)==f, 4:6);
+    pR = R1(R1(:,1)==f, 4:6);
+    if ~isempty(pL) && ~isempty(pR)
+        shoulder1(i) = norm(pL - pR);
+    else
+        shoulder1(i) = NaN;
+    end
+end
+
 shoulder1 = shoulder1(~isnan(shoulder1));
 
 % Compute scaling
@@ -70,24 +96,59 @@ target_scale = mean([scale0, scale1]);
 pose0_3D(:,4:6) = pose0_3D(:,4:6) * (target_scale / scale0);
 pose1_3D(:,4:6) = pose1_3D(:,4:6) * (target_scale / scale1);
 
+% Align all poses to cam3's point of view
+R_cam3 = cameraPoses(3).R;  % world-to-cam3 rotation
+t_cam3 = cameraPoses(3).t;  % world-to-cam3 translation
+
+% Pose 0
+for i = 1:size(pose0_3D,1)
+    pt = pose0_3D(i,4:6)';
+    pose0_3D(i,4:6) = (R_cam3 * (pt - t_cam3))';
+end
+
+% Pose 1
+for i = 1:size(pose1_3D,1)
+    pt = pose1_3D(i,4:6)';
+    pose1_3D(i,4:6) = (R_cam3 * (pt - t_cam3))';
+end
+
+
+%% Scale to Real-World Measures
+% Get camera centers from camera extrinsics
+C1 = -cameraPoses(1).R' * cameraPoses(1).t;
+C2 = -cameraPoses(2).R' * cameraPoses(2).t;
+
+% Compute distance between cameras 1 and 2 in your reconstruction
+reconstructed_distance = norm(C1 - C2);
+
+% Real-world known distance
+real_distance = 1.0; % meters
+
+% Compute scaling factor
+scale_factor = real_distance / reconstructed_distance;
+
+% Apply scaling to the reconstructed poses
+pose0_3D(:,4:6) = pose0_3D(:,4:6) * scale_factor;
+pose1_3D(:,4:6) = pose1_3D(:,4:6) * scale_factor;
+
 
 %% Write reconstructed poses to CSV files
 % Export pose reconstruction to csv
 all_poses = [pose0_3D; pose1_3D];
 
-% Export pose 0 keypoints
+% % Export pose 0 keypoints
 writetable(array2table(pose0_3D, ...
     'VariableNames', {'frame', 'pose', 'keypoint', 'x', 'y', 'z'}), ...
-    '3D_pose_reconstruction_0.csv');
+    fullfile(path_results, '3D_pose_reconstruction_0.csv'));
 
 % Export pose 1 keypoints
 writetable(array2table(pose1_3D, ...
     'VariableNames', {'frame', 'pose', 'keypoint', 'x', 'y', 'z'}), ...
-    '3D_pose_reconstruction_1.csv');
+    fullfile(path_results, '3D_pose_reconstruction_1.csv'));
 
 
 %% Plot results
-% Visualize the 3D skeletons over time
+Visualize the 3D skeletons over time
 plot_skeletons(all_poses);
 
 
@@ -200,7 +261,6 @@ end
 function pose_3D = triangulate_pose_3view(poseID, data_cam1, data_cam2, data_cam3, P1, P2, P3)
     % Triangulate all visible keypoints for a given poseID across frames
 
-    min_confidence = 0.01;
     keypoints_to_use = [0, ...                      % Nose
                         1, 2, 3, 4, 5, 6, ...       % Eyes
                         7, 8, ...                   % Ears
@@ -219,11 +279,6 @@ function pose_3D = triangulate_pose_3view(poseID, data_cam1, data_cam2, data_cam
     xy2 = [data_cam2(:,4), data_cam2(:,5)];
     xy3 = [data_cam3(:,4), data_cam3(:,5)];
 
-    % Get confidence values for each landmark
-    conf1 = data_cam1(:,7);
-    conf2 = data_cam2(:,7);
-    conf3 = data_cam3(:,7);
-
     common_frames = intersect(intersect(frames1, frames2), frames3);
     pose_3D = [];
 
@@ -239,15 +294,6 @@ function pose_3D = triangulate_pose_3view(poseID, data_cam1, data_cam2, data_cam
             match3 = idx3 & landmarks3 == k & poses3 == poseID;
 
             if any(match1) && any(match2) && any(match3)
-                % Check confidence
-                c1 = mean(conf1(match1));
-                c2 = mean(conf2(match2));
-                c3 = mean(conf3(match3));
-
-                if c1 < min_confidence || c2 < min_confidence || c3 < min_confidence
-                    continue;
-                end
-
                 x1 = mean(xy1(match1, :), 1);
                 x2 = mean(xy2(match2, :), 1);
                 x3 = mean(xy3(match3, :), 1);
@@ -285,38 +331,6 @@ function X = triangulate_points_multi(x_list, P_list)
     X = X_hom(1:3) / X_hom(4);
 end
 
-function scale = compute_shoulder_scale_2d(cam3_data, poseID)
-    % Filter for current pose and keypoints
-    idx_L = cam3_data(:,2) == poseID & cam3_data(:,3) == 11;
-    idx_R = cam3_data(:,2) == poseID & cam3_data(:,3) == 12;
-
-    % Get frame numbers where each shoulder appears
-    frames_L = cam3_data(idx_L, 1);
-    frames_R = cam3_data(idx_R, 1);
-    common_frames = intersect(frames_L, frames_R);
-
-    distances = [];
-
-    for f = common_frames'
-        xL = cam3_data(cam3_data(:,1) == f & cam3_data(:,3) == 11 & cam3_data(:,2) == poseID, 4:5);
-        xR = cam3_data(cam3_data(:,1) == f & cam3_data(:,3) == 12 & cam3_data(:,2) == poseID, 4:5);
-
-        if ~isempty(xL) && ~isempty(xR) && all(~isnan(xL)) && all(~isnan(xR))
-            d = norm(xL - xR);
-            if ~isnan(d)
-                distances(end+1) = d;
-            end
-        end
-    end
-
-    % Return median distance if available, otherwise NaN
-    if ~isempty(distances)
-        scale = median(distances);
-    else
-        scale = NaN;
-    end
-end
-
 function plot_skeletons(all_poses)
     % Visualize 3D skeletons frame by frame
     % Skeleton is drawn using a predefined MediaPipe-style connectivity map
@@ -340,8 +354,8 @@ function plot_skeletons(all_poses)
         0 4; 4 5; 5 6; 6 8;  
         9 10; 
         11 12; 
-        11 13; 13 15; % 15 17; 15 19; 17 19; 15 21;  
-        12 14; 14 16; % 16 18; 16 20; 18 20; 16 22 
+        11 13; 13 15; 
+        12 14; 14 16; 
     ];
 
     for f = frames'
@@ -363,7 +377,7 @@ function plot_skeletons(all_poses)
             for i = 1:size(skeleton_connections,1)
                 p1 = skeleton_connections(i,1)+1;
                 p2 = skeleton_connections(i,2)+1;
-                if all(~isnan(X0(:,[p1 p2])), 'all')
+                if all(~isnan(X0(:,p1))) && all(~isnan(X0(:,p2)))
                     plot3(X0(1,[p1 p2]), X0(2,[p1 p2]), X0(3,[p1 p2]), 'r-', 'LineWidth', 2);
                 end
             end
@@ -383,7 +397,7 @@ function plot_skeletons(all_poses)
             for i = 1:size(skeleton_connections,1)
                 p1 = skeleton_connections(i,1)+1;
                 p2 = skeleton_connections(i,2)+1;
-                if all(~isnan(X1(:,[p1 p2])), 'all')
+                if all(~isnan(X1(:,p1))) && all(~isnan(X1(:,p2)))
                     plot3(X1(1,[p1 p2]), X1(2,[p1 p2]), X1(3,[p1 p2]), 'b-', 'LineWidth', 2);
                 end
             end

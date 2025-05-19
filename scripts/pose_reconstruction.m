@@ -1,12 +1,10 @@
 clear; close all; clc;
 
 % Define path to stereo calibration parameters
-path = "../../../experimental_studies/gaips/matlab_calibrations/params/";
-stereo_params = load_and_extract(path + "stereoParams.mat");
+path = "../../../experimental_studies/gaips/matlab_calibrations/colmap/";
+stereo_params = load_and_extract(path + "stereoParams_G1_G2.mat");
 
-% Compute projection matrices (P1, P2) and camera translation vectors (T1, T2)
-[P1, P2, T1, T2] = compute_camera_matrix(stereo_params);
-
+[P1, P2] = compute_camera_matrix(stereo_params);
 
 
 %% Handle MediaPipe Data
@@ -15,43 +13,42 @@ image_width = 1920;
 image_height = 1080;
 
 % Load MediaPipe CSV keypoint data from both camera views
-data_cam1 = readmatrix('../../../experimental_studies/gaips/1/results/G1_mediapipe_fixed.csv'); % Change to the right path
-data_cam2 = readmatrix('../../../experimental_studies/gaips/1/results/G2_mediapipe_fixed.csv'); % Change to the right path
+data_cam1 = readmatrix('../../../experimental_studies/gaips/2/results/G1_mediapipe_fixed.csv'); % Change to the right path
+data_cam2 = readmatrix('../../../experimental_studies/gaips/2/results/G2_mediapipe_fixed.csv'); % Change to the right path
+data_cam3 = readmatrix('../../../experimental_studies/gaips/2/results/G3_mediapipe_fixed.csv'); % Change to the right path
 
-% Reassign pose IDs based on horizontal location (left = 0, right = 1)
-data_cam1 = reassign_pose_ids_by_horizontal_position(data_cam1, image_width, image_height);
-data_cam2 = reassign_pose_ids_by_horizontal_position(data_cam2, image_width, image_height);
+% Convert normalized coords from MediaPipe to pixels
+data_cam1(:,4:5) = data_cam1(:,4:5) .* [image_width, image_height];
+data_cam2(:,4:5) = data_cam2(:,4:5) .* [image_width, image_height];
+data_cam1(:,5) = image_height - data_cam1(:,5);
+data_cam2(:,5) = image_height - data_cam2(:,5);
 
+
+%% Compute Fundamental Matrix
+[F, E] = compute_fundamental_and_essential(data_cam1, data_cam2, stereo_params, 0, 8);
+disp('Fundamental Matrix:'), disp(F)
+disp('Essential Matrix:'), disp(E)
 
 
 %% Triangulate keypoints
 % Reconstruct 3D keypoints for pose 0 and pose 1
-pose0_3D = triangulate_pose(0, data_cam1, data_cam2, P1, P2);
-pose1_3D = triangulate_pose(1, data_cam1, data_cam2, P1, P2);
-
-% Export pose reconstruction to csv
-all_poses = [pose0_3D; pose1_3D];
+pose0_3D = triangulate_pose(0, data_cam1, data_cam2, P1, P2, F);
+pose1_3D = triangulate_pose(1, data_cam1, data_cam2, P1, P2, F);
 
 
-%% Rotate
-% Extract just the 3D positions
-XYZ = all_poses(:, 4:6)';
+%% Correct skeletons using symmetric joint references
+% Get per-keypoint confidence from data
+conf0 = extract_confidence(0, data_cam1, data_cam2);
+conf1 = extract_confidence(1, data_cam1, data_cam2);
 
-% Define rotation matrix to align coordinate system
-% (Swaps Y and Z axes to make Y = vertical, Z = lateral)
-R = [0  0  1;
-     0  1  0;
-    -1  0  0];
-
-% Apply rotation
-XYZ_rot = R * XYZ;
-
-% Update `all_poses` with rotated coordinates
-all_poses(:, 4:6) = XYZ_rot';
-
+pose0_3D(:,4:6) = correct_low_confidence_symmetric(pose0_3D(:,4:6), conf0, 0.2);
+pose1_3D(:,4:6) = correct_low_confidence_symmetric(pose1_3D(:,4:6), conf1, 0.2);
 
 
 %% Write reconstructed poses to CSV files
+% Export pose reconstruction to csv
+all_poses = [pose0_3D; pose1_3D];
+
 % Export pose 0 keypoints
 writetable(array2table(pose0_3D, ...
     'VariableNames', {'frame', 'pose', 'keypoint', 'x', 'y', 'z'}), ...
@@ -70,7 +67,6 @@ plot_skeletons(all_poses);
 
 
 
-
 %% ========================= Auxiliary Functions ==========================
 
 function out = load_and_extract(path)
@@ -80,7 +76,7 @@ function out = load_and_extract(path)
 end
 
 
-function [P1, P2, T1, T2] = compute_camera_matrix(stereoParams)
+function [P1, P2] = compute_camera_matrix(stereoParams)
     % Compute projection matrices for stereo triangulation
     % P1, P2: 3x4 projection matrices
     % T1, T2: translation vectors (T1 is zero since camera 1 is reference)
@@ -101,59 +97,110 @@ function [P1, P2, T1, T2] = compute_camera_matrix(stereoParams)
 end
 
 
-function data_out = reassign_pose_ids_by_horizontal_position(data, img_width, img_height)
-    % Reassign pose IDs per frame so that leftmost = 0 and rightmost = 1
-    % Useful to maintain consistent identity assignment across views
+function conf = extract_confidence(poseID, data1, data2)
+    N = 33;  % Total number of keypoints
+    conf = zeros(N,1);
 
-    frames = unique(data(:,1));
-    data_out = data;
-    
-    for i = 1:length(frames)
-        frame = frames(i);
-        idx_frame = data(:,1) == frame;
-        poses_in_frame = unique(data(idx_frame,2));
-        
-        if numel(poses_in_frame) ~= 2
-            continue;  % Skip frames that don't have exactly 2 poses
-        end
-        
-        centroids = zeros(2,1);
-        for j = 1:2
-            idx_pose = idx_frame & data(:,2) == poses_in_frame(j);
-            keypoints = data(idx_pose, 4:5) .* [img_width, img_height];
-            centroids(j) = mean(keypoints(:,1));  % X-centroid
-        end
-        
-        % Sort poses left to right and reassign IDs
-        [~, order] = sort(centroids);
-        original_ids = poses_in_frame(order);
-        new_ids = [0, 1];
-        
-        for j = 1:2
-            data_out(idx_frame & data(:,2) == original_ids(j), 2) = new_ids(j);
-        end
+    for k = 0:N-1
+        c1 = mean(data1(data1(:,2)==poseID & data1(:,3)==k, 7), 'omitnan');
+        c2 = mean(data2(data2(:,2)==poseID & data2(:,3)==k, 7), 'omitnan');
+        conf(k+1) = mean([c1 c2], 'omitnan');  % merge both cameras
     end
 end
 
 
-function pose_3D = triangulate_pose(poseID, data_cam1, data_cam2, P1, P2)
+function [F, E] = compute_fundamental_and_essential(data_cam1, data_cam2, stereoParams, poseID, num_points)
+    % Estimate F and E matrices from top-N confident correspondences across frames
+
+    % Convert normalized coordinates to pixels
+    data1 = data_cam1;
+    data2 = data_cam2;
+
+    % Filter only poseID entries
+    data1 = data1(data1(:,2) == poseID, :);
+    data2 = data2(data2(:,2) == poseID, :);
+
+    % Accumulate confident matches across frames
+    matches = [];
+    frames = intersect(unique(data1(:,1)), unique(data2(:,1)));
+
+    for f = frames'
+        d1 = data1(data1(:,1) == f, :);
+        d2 = data2(data2(:,1) == f, :);
+        [common_kpts, ia, ib] = intersect(d1(:,3), d2(:,3));
+
+        if numel(common_kpts) < 1
+            continue;
+        end
+
+        for i = 1:numel(common_kpts)
+            pt1 = d1(ia(i), 4:5);
+            pt2 = d2(ib(i), 4:5);
+        
+            if any(isnan(pt1)) || any(isnan(pt2))
+                continue;  % skip invalid points
+            end
+        
+            c = (d1(ia(i), 7) + d2(ib(i), 7)) / 2;
+            matches = [matches; c, pt1, pt2];
+        end
+    end
+
+    % Sort by confidence and take top-N
+    matches = sortrows(matches, -1);  % descending
+    matches = matches(1:min(num_points, size(matches,1)), :);
+
+    disp("Number of matches used:");
+    disp(size(matches,1));
+    disp("Matches preview:");
+    disp(matches(:,2:5));
+
+    pts1 = matches(:,2:3);
+    pts2 = matches(:,4:5);
+
+    % Sanity check before estimating F
+    if size(matches,1) < 8
+        error("Not enough valid matches to estimate F (got %d)", size(matches,1));
+    end
+    
+    if any(isnan(matches(:)))
+        error("Matches contain NaNs. Check landmark filtering.");
+    end
+
+    % Estimate Fundamental Matrix
+    F = estimateFundamentalMatrix(pts1, pts2, ...
+        'Method', 'Norm8Point', 'NumTrials', 2000, 'DistanceThreshold', 1);
+
+    % Compute Essential Matrix: E = K2' * F * K1
+    K1 = stereoParams.CameraParameters1.IntrinsicMatrix';
+    K2 = stereoParams.CameraParameters2.IntrinsicMatrix';
+    E = K2' * F * K1;
+end
+
+
+function pose_3D = triangulate_pose(poseID, data_cam1, data_cam2, P1, P2, F)
     % Triangulate all visible keypoints for a given poseID across frames
 
-    image_width = 1920;
-    image_height = 1080;
-    keypoints_to_use = 0:22;  % Keypoints 0 to 22
+    min_confidence = 0.01;
+    keypoints_to_use = [0, ...                      % Nose
+                        1, 2, 3, 4, 5, 6, ...       % Eyes
+                        7, 8, ...                   % Ears
+                        9, 10, ...                  % Mouth
+                        11, 12, ...                 % Shoulders
+                        13, 14, ...                 % Elbows
+                        15, 16, ...                 % Wrists
+                        ];
 
     % Parse data
     frames1 = data_cam1(:,1); poses1 = data_cam1(:,2); landmarks1 = data_cam1(:,3);
     frames2 = data_cam2(:,1); poses2 = data_cam2(:,2); landmarks2 = data_cam2(:,3);
 
-    % Convert normalized coords to pixels
-    xy1 = [data_cam1(:,4), data_cam1(:,5)] .* [image_width, image_height];
-    xy2 = [data_cam2(:,4), data_cam2(:,5)] .* [image_width, image_height];
+    xy1 = [data_cam1(:,4), data_cam1(:,5)];
+    xy2 = [data_cam2(:,4), data_cam2(:,5)];
 
-    % Flip Y-axis to match image coordinate MediaPipe convention
-    xy1(:,2) = image_height - xy1(:,2);
-    xy2(:,2) = image_height - xy2(:,2);
+    % Get confidence values for each landmark
+    conf1 = data_cam1(:,7);
+    conf2 = data_cam2(:,7);
 
     common_frames = intersect(frames1, frames2);
     pose_3D = [];
@@ -168,8 +215,24 @@ function pose_3D = triangulate_pose(poseID, data_cam1, data_cam2, P1, P2)
             match2 = idx2 & landmarks2 == k & poses2 == poseID;
 
             if any(match1) && any(match2)
+                % Check confidence
+                c1 = mean(conf1(match1));
+                c2 = mean(conf2(match2));
+
+                if c1 < min_confidence || c2 < min_confidence
+                    continue;
+                end
+
                 x1 = mean(xy1(match1, :), 1);
                 x2 = mean(xy2(match2, :), 1);
+
+                if c1 < 0.2 && c2 >= 0.5
+                    % Refine x1 using epipolar line from x2
+                    x1 = refine_point_with_epipolar_line(x2, x1, F');  % Use F' to invert direction
+                elseif c2 < 0.2 && c1 >= 0.5
+                    % Refine x2 using epipolar line from x1
+                    x2 = refine_point_with_epipolar_line(x1, x2, F);
+                end
 
                 x1_hom = [x1, 1]';
                 x2_hom = [x2, 1]';
@@ -202,6 +265,80 @@ function X = triangulate_points(x1, x2, P1, P2)
 end
 
 
+function x2_refined = refine_point_with_epipolar_line(x1, x2_noisy, F)
+    % x1: [x, y] from camera 1 (high confidence)
+    % x2_noisy: [x, y] from camera 2 (low confidence)
+    % F: fundamental matrix
+    % Output: x2_refined: [x, y] corrected point on the epipolar line
+
+    % Compute epipolar line in image 2 for point in image 1
+    x1_hom = [x1(:); 1];  % 3x1
+    l2 = F * x1_hom;      % 3x1 line in form [a, b, c]
+
+    % Line: a*x + b*y + c = 0
+    a = l2(1); b = l2(2); c = l2(3);
+
+    % Project x2_noisy onto epipolar line
+    x0 = x2_noisy(1);
+    y0 = x2_noisy(2);
+
+    % Projection of (x0, y0) onto line ax + by + c = 0
+    d = (a*x0 + b*y0 + c) / (a^2 + b^2);
+    x_proj = x0 - a * d;
+    y_proj = y0 - b * d;
+
+    x2_refined = [x_proj, y_proj];
+end
+
+
+function pose_corrected = correct_low_confidence_symmetric(pose, conf, threshold)
+% pose : N x 3 matrix with landmark coordinates (x, y, z)
+% conf : N x 1 vector of confidence values
+% threshold : minimum confidence required to keep the landmark
+% pose_corrected : corrected pose (N x 3)
+
+    pose_corrected = pose;
+
+    % Define symmetric limbs: [target, mirror, parent]
+    limbs = [
+        13, 14, 11;
+        14, 13, 12;
+        15, 16, 13;
+        16, 15, 14;
+        17, 18, 15;
+        18, 17, 16;
+        19, 20, 17;
+        20, 19, 18;
+        21, 22, 17;
+        22, 21, 18;
+        23, 24, 11;
+        24, 23, 11;
+        25, 26, 23;
+        26, 25, 24;
+        27, 28, 25;
+        28, 27, 26;
+    ];
+
+    for i = 1:size(limbs,1)
+        target = limbs(i,1);
+        mirror = limbs(i,2);
+        parent = limbs(i,3);
+
+        if conf(target+1) < threshold && ...
+           conf(mirror+1) >= threshold && ...
+           conf(parent+1) >= threshold
+
+            % Get mirrored vector
+            v = pose(mirror+1,:) - pose(parent+1,:);
+            v_mirror = -v;
+
+            % Reconstruct target landmark position
+            pose_corrected(target+1,:) = pose(parent+1,:) + v_mirror;
+        end
+    end
+end
+
+
 function plot_skeletons(all_poses)
     % Visualize 3D skeletons frame by frame
     % Skeleton is drawn using a predefined MediaPipe-style connectivity map
@@ -217,7 +354,7 @@ function plot_skeletons(all_poses)
     xlabel('X'); ylabel('Y'); zlabel('Z');
     title('3D Reconstructed Skeletons');
     grid on; axis equal;
-    view(45, 20);
+    view(0, 15);
 
     % Define skeleton connections (based on MediaPipe)
     skeleton_connections = [ ...
@@ -225,8 +362,8 @@ function plot_skeletons(all_poses)
         0 4; 4 5; 5 6; 6 8;  
         9 10; 
         11 12; 
-        11 13; 13 15; 15 17; 15 19; 17 19; 15 21;  
-        12 14; 14 16; 16 18; 16 20; 18 20; 16 22 
+        11 13; 13 15; % 15 17; 15 19; 17 19; 15 21;  
+        12 14; 14 16; % 16 18; 16 20; 18 20; 16 22 
     ];
 
     for f = frames'
