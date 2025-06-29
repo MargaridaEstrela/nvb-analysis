@@ -97,14 +97,6 @@ class PoseLandmarkExtractor:
                     if detection_result.pose_landmarks:
                         for pose_id, pose_landmarks in enumerate(detection_result.pose_landmarks[:2]):  # up to 2 people
                             self.save_landmarks_to_csv(pose_landmarks, pose_id)
-                        # num_detected_poses = len(detection_result.pose_landmarks)
-                        
-                        # if num_detected_poses == 1:
-                        #     assigned_poses = [detection_result.pose_landmarks[0], None]  # Store the single person, keep second empty
-                        # elif num_detected_poses >= 2:
-                        #     assigned_poses = self.assign_closest_person(detection_result.pose_landmarks[:2])
-                        
-                        # self.save_landmarks_to_csv(assigned_poses)
 
                     self.frame_index += 1
                     pbar.update(1)

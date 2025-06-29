@@ -4,10 +4,22 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
 class PoseMetrics:
-    def __init__(self, pose0_csvPath, pose1_csvPath, results_path):
-        self.data0 = pd.read_csv(pose0_csvPath)
-        self.data1 = pd.read_csv(pose1_csvPath)
+    """
+    Compute and export pose comparison metrics for two synchronized participants.
+
+    Args:
+        data0: keypoint trajectories for pose 0 (cols: frame, pose, keypoint, x, y, z)
+        data1: keypoint trajectories for pose 1
+        results_path: base path where figures/CSVs will be saved
+        window_frames: named annotation frames (initial and end frame) for each window
+        fs: sampling frequency (frames per second)
+    """
+
+    def __init__(self, data0, data1, results_path, window_frames=None):
+        self.data0 = data0
+        self.data1 = data1
         self.results_path = results_path
+        self.window_frames = window_frames
         self.yaw0 = None
         self.yaw1 = None
         self.metrics0 = None
@@ -73,32 +85,10 @@ class PoseMetrics:
 
         return deviation
 
-    def _compute_displacement_metrics(self, data):
-        """
-        Computes frame-to-frame displacement magnitude for each keypoint.
-        Returns a dictionary with mean and amplitude for each keypoint.
-        """
-        keypoints = self.keypoints_dict()
-        summary = {}
-
-        for kpt_id, kpt_name in keypoints.items():
-            coords = self._get_keypoint_trajectory(data, kpt_id)
-            coords = coords[~np.isnan(coords).any(axis=1)]
-
-            if coords.shape[0] < 2:
-                summary[kpt_name] = np.array([])
-                continue
-
-            # Compute displacement between consecutive valid frames
-            displacements = np.linalg.norm(np.diff(coords, axis=0), axis=1)
-            summary[kpt_name] = {
-                'displacement_mean': float(np.mean(displacements)),
-                'displacement_amplitude': float(np.ptp(displacements))
-            }
-
-        return summary
-
-    def _compute_displacement_initial(self, data):
+    # -------------------------------------------------------------------------
+    # Displacement & Midpoint Metrics
+    # -------------------------------------------------------------------------
+    def _compute_delta_keypoints(self, data):
         """
         Computes the displacement from the initial position for each keypoint.
         Returns mean and amplitude along each axis (x, y, z).
@@ -111,7 +101,10 @@ class PoseMetrics:
             coords = coords[~np.isnan(coords).any(axis=1)]
 
             if coords.shape[0] < 2:
-                summary[kpt_name] = np.array([])
+                summary[kpt_name] = {
+                    'mean_dx': np.nan, 'mean_dy': np.nan, 'mean_dz': np.nan,
+                    'amp_dx': np.nan, 'amp_dy': np.nan, 'amp_dz': np.nan
+                }
                 continue
 
             initial = coords[0]
@@ -131,46 +124,57 @@ class PoseMetrics:
 
         return summary
 
-    def _compute_depth_from_initial(self, disp_dict):
+    def _compute_delta_shoulders_midpoint(self, disp_dict, pose_id):
         """
-        Estimates mean depth and its variation using the Z-axis displacement from the shoulders midpoint
+        Estimates mean and amplitude along the X and Z axes
         """
         if 'left_shoulder' in disp_dict and 'right_shoulder' in disp_dict:
             left = disp_dict['left_shoulder']
             right = disp_dict['right_shoulder']
 
-            mean_depth = (left['mean_dz'] + right['mean_dz']) / 2
-            depth_range = (left['amp_dz'] + right['amp_dz']) / 2
+            delta_x_mean = (left['mean_dx'] + right['mean_dx']) / 2
+            delta_x_amp = (left['amp_dx'] + right['amp_dx']) / 2
+            delta_z_mean = (left['mean_dz'] + right['mean_dz']) / 2
+            delta_z_amp = (left['amp_dz'] + right['amp_dz']) / 2
+
+            # Flip X for pose 1 to align inward movement with positive direction
+            if pose_id == 1:
+                delta_x_mean *= -1
+
+            # Normalize Z: toward robot (–Z) = positive movement
+            delta_z_mean *= -1
 
             return {
-                "mean_depth": mean_depth,
-                "depth_range": depth_range
+                "delta_x_mean": delta_x_mean,
+                "delta_x_amp": delta_x_amp,
+                "delta_z_mean": delta_z_mean,
+                "delta_z_amp": delta_z_amp
             }
 
         return {
-            "mean_depth": np.nan,
-            "depth_range": np.nan
+            "delta_x_mean": np.nan,
+            "delta_x_amp": np.nan,
+            "delta_z_mean": np.nan,
+            "delta_z_amp": np.nan,
         }
 
-    def _compute_yaw(self, data, left_id=11, right_id=12, pose_id=0):
+    def _compute_shoulders_vector_angle(self, data, left_id=11, right_id=12, pose_id=0):
         """
-        Computes yaw angles over time by measuring the orientation of the shoulder line
+        Computes the angle between the vector connecting the left and right shoulders and the front-facing camera axis
         """
-
         left = self._get_keypoint_trajectory(data, left_id)
         right = self._get_keypoint_trajectory(data, right_id)
 
         shoulder_vec = left - right
-        yaw_angles = self._angle_with_front_view(shoulder_vec, pose_id)
+        vec_angles = self._angle_with_front_view(shoulder_vec, pose_id)
 
-        # yaw_angles = yaw_angles[~np.isnan(yaw_angles)]
-        if yaw_angles.size == 0:
+        if vec_angles.size == 0:
             return np.array([])
 
-        # initial_yaw = yaw_angles[0]
-        # yaw_deltas = yaw_angles - initial_yaw
+        # initial_angle = vec_angles[0]
+        # angle_delta = vec_angles - initial_angle
 
-        return yaw_angles
+        return vec_angles
 
     def _compute_shoulders_midpoint(self, data):
         """
@@ -181,88 +185,23 @@ class PoseMetrics:
         right = self._get_keypoint_trajectory(data, 12)
         return (left + right) / 2
 
-    def _compute_yaw_metrics(self, yaw):
+    def _compute_vector_angles_metrics(self, yaw):
         """
         Returns basic yaw metrics: mean and range.
         """
-
         yaw = yaw[~np.isnan(yaw)]
-        return {
-            "mean_yaw": yaw.mean(),
-            "yaw_range": yaw.max() - yaw.min()
-        }
-
-    def _compute_engagement_features(self, yaw_values):
-        """
-        Extracts engagement features from yaw data: amplitude, std deviation, number of peaks, and frozen frames
-        """
-
-        yaw_values = yaw_values[~np.isnan(yaw_values)]
-        if len(yaw_values) < 3:
-            return {
-                "amplitude": np.nan,
-                "std_dev": np.nan,
-                "num_peaks": np.nan,
-                "frozen_frames": np.nan
-            }
-
-        amplitude = np.max(yaw_values) - np.min(yaw_values)
-        std_dev = np.std(yaw_values)
-
-        # Count sign changes in first derivative → peaks and troughs
-        diffs = np.diff(yaw_values)
-        sign_changes = np.diff(np.sign(diffs))
-        num_peaks = np.sum(sign_changes != 0)
-
-        # Count frames with very small variation (signal freezing)
-        frozen_frames = np.sum(np.abs(diffs) < 0.1)
+        if yaw.size == 0:
+            return {"mean": np.nan, "amp": np.nan}
 
         return {
-            "amplitude": amplitude,
-            "std_dev": std_dev,
-            "num_peaks": num_peaks,
-            "frozen_frames": frozen_frames
+            "mean": yaw.mean(),
+            "amp": yaw.max() - yaw.min()
         }
 
-    def _compute_yaw_speed_features(self, yaw):
-        """
-        Computes angular speed metrics from the yaw signal
-        """
-
-        yaw = yaw[~np.isnan(yaw)]
-        if len(yaw) < 2:
-            return {
-                "mean_speed": np.nan,
-                "max_speed": np.nan,
-                "speed_std": np.nan,
-                "num_fast_turns": np.nan
-            }
-
-        velocity = np.diff(yaw)
-        speed = np.abs(velocity)
-
-        fast_threshold = 0.1  # deg/frame
-
-        return {
-            "mean_speed": np.mean(speed),
-            "max_speed": np.max(speed),
-            "speed_std": np.std(speed),
-            "num_fast_turns": np.sum(speed > fast_threshold)
-        }
-
-    def _compute_depht_metrics(self, data):
-        """
-        Calculates mean and range of depth (Z-axis) from shoulder midpoint
-        """
-
-        depth = self._compute_shoulders_midpoint(data)[:, 2]
-        depth = depth[~np.isnan(depth)]
-        return {
-            "mean_depth": depth.mean(),
-            "depth_range": depth.max() - depth.min()
-        }
-
-    def _compute_proximity_metrics(self):
+    # -------------------------------------------------------------------------
+    # Participants Distance & Inward Movement
+    # -------------------------------------------------------------------------
+    def _compute_participants_distance(self):
         """
         Computes variation in proximity between the left shoulder of pose 0
         and the right shoulder of pose 1
@@ -284,8 +223,8 @@ class PoseMetrics:
 
         if len(shoulder_left0) == 0 or len(shoulder_right1) == 0:
             return {
-                "mean_distance": np.nan,
-                "distance_range": np.nan
+                "mean": np.nan,
+                "amp": np.nan
             }
 
         distances = np.linalg.norm(shoulder_left0 - shoulder_right1, axis=1)
@@ -293,16 +232,16 @@ class PoseMetrics:
 
         if len(distances) == 0:
             return {
-                "mean_distance": np.nan,
-                "distance_range": np.nan
+                "mean": np.nan,
+                "amp": np.nan
             }
 
         initial_distance = distances[0]
-        delta_distances = distances - initial_distance
+        delta_distances = initial_distance - distances
 
         return {
-            "mean_distance": np.mean(delta_distances),
-            "distance_range": np.ptp(delta_distances)
+            "mean": np.mean(delta_distances),
+            "amp": np.ptp(delta_distances)
         }
 
     def _compare_inward_movement_x(self):
@@ -320,66 +259,183 @@ class PoseMetrics:
         mid_x0 = self._compute_shoulders_midpoint(self.data0)[:, 0]
         mid_x1 = self._compute_shoulders_midpoint(self.data1)[:, 0]
         
-        mid_x0 = mid_x0[~np.isnan(mid_x0)]
-        mid_x1 = mid_x1[~np.isnan(mid_x1)]
+        valid_x0 = mid_x0[~np.isnan(mid_x0)]
+        valid_x1 = mid_x1[~np.isnan(mid_x1)]
 
-        mean_disp_x0 = np.nanmean(mid_x0 - mid_x0[0])
-        mean_disp_x1 = np.nanmean(mid_x1[0] - mid_x1)
+        if len(valid_x0) == 0 or len(valid_x1) == 0:
+            return {
+                "mean_disp_x_pose0": np.nan,
+                "mean_disp_x_pose1": np.nan,
+                "more_inward_pose": np.nan
+            }
 
-        # Decide which pose moved more inward (i.e., lower mean X)
-        if mean_disp_x0 < mean_disp_x1:
-            more_inward_pose = 0
-        else:
-            more_inward_pose = 1
+        delta_x0 = valid_x0 - valid_x0[0]       # inward = +X
+        delta_x1 = valid_x1 - valid_x1[0]       # inward = –X
+
+        inward_disp_x0 = delta_x0               # +X = inward
+        inward_disp_x1 = -delta_x1              # –X = inward → flip to +
+
+        mean_inward_x0 = np.nanmean(inward_disp_x0)
+        mean_inward_x1 = np.nanmean(inward_disp_x1)
+
+        more_inward_pose = 0 if mean_inward_x0 > mean_inward_x1 else 1
 
         return {
-            "mean_disp_x_pose0": mean_disp_x0,
-            "mean_disp_x_pose1": mean_disp_x1,
+            "mean_disp_x_pose0": mean_inward_x0,
+            "mean_disp_x_pose1": mean_inward_x1,
             "more_inward_pose": more_inward_pose
         }
 
-    def compute_all_metrics(self):
-        self.yaw0 = self._compute_yaw(self.data0, pose_id=0)
-        self.yaw1 = self._compute_yaw(self.data1, pose_id=1)
+    def _compute_absolute_distance(self):
+        """
+        Computes the delta distance between the two participants.
+        """
+        common_frames = sorted(set(self.data0['frame']).intersection(self.data1['frame']))
 
-        self.disp0 = self._compute_displacement_initial(self.data0)
-        self.disp1 = self._compute_displacement_initial(self.data1)
+        start_dist = None
+        end_dist = None
+
+        # First valid distance
+        for frame in common_frames:
+            shoulder0 = self._get_keypoint_by_frame(self.data0, 11, frame)  # left shoulder
+            shoulder1 = self._get_keypoint_by_frame(self.data1, 12, frame)  # right shoulder
+            if shoulder0.size == 3 and shoulder1.size == 3 and not np.isnan(shoulder0).any() and not np.isnan(shoulder1).any():
+                start_dist = np.linalg.norm(shoulder0 - shoulder1)
+                break
+
+        # Last valid distance
+        for frame in reversed(common_frames):
+            shoulder0 = self._get_keypoint_by_frame(self.data0, 11, frame)
+            shoulder1 = self._get_keypoint_by_frame(self.data1, 12, frame)
+            if shoulder0.size == 3 and shoulder1.size == 3 and not np.isnan(shoulder0).any() and not np.isnan(shoulder1).any():
+                end_dist = np.linalg.norm(shoulder0 - shoulder1)
+                break
+
+        if start_dist is not None and end_dist is not None:
+            delta = start_dist - end_dist
+            return delta
+
+        return None
+
+    # -------------------------------------------------------------------------
+    # Speed & Jerk Metrics
+    # -------------------------------------------------------------------------
+    def _compute_speed(self, data, fs=30.0):
+        """
+        Computes mean speed and speed variability (SD).
+        """
+        results = {}
+        all_speeds = []
+
+        for kpt_id, kpt_name in self.keypoints_dict().items():
+            coords = data[data['keypoint'] == kpt_id][['x', 'y', 'z']].values
+            coords = np.asarray(coords, dtype=np.float64)
+            coords = coords[~np.isnan(coords).any(axis=1)]
+
+            if len(coords) < 2:
+                results[kpt_name] = {'mean': np.nan, 'std': np.nan}
+                continue
+
+            velocity = np.diff(coords, axis=0) * fs
+            speed = np.linalg.norm(velocity, axis=1)
+
+            results[kpt_name] = {
+                'mean': float(np.mean(speed)),
+                'std': float(np.std(speed))
+            }
+
+            all_speeds.extend(speed)
+
+        results['overall'] = {
+            'mean': float(np.mean(all_speeds)) if all_speeds else np.nan,
+            'std': float(np.std(all_speeds)) if all_speeds else np.nan
+        }
+
+        return results
+
+    def _compute_mean_jerk(self, data, fs=30.0):
+        results = {}
+        all_rms_jerk_values = []
+
+        for kpt_id, kpt_name in self.keypoints_dict().items():
+            coords = data[data['keypoint'] == kpt_id][['x', 'y', 'z']].values
+            coords = np.asarray(coords, dtype=np.float64)
+            coords = coords[~np.isnan(coords).any(axis=1)]
+
+            if len(coords) < 4:
+                results[kpt_name] = np.nan
+                continue
+
+            jerk = np.diff(coords, n=3, axis=0) * (fs ** 3)
+            jerk_magnitude = np.linalg.norm(jerk, axis=1)
+            rms_jerk = np.sqrt(np.mean(jerk_magnitude ** 2))
+
+            results[kpt_name] = float(rms_jerk)
+            all_rms_jerk_values.append(rms_jerk)
+
+        results['overall'] = float(np.mean(all_rms_jerk_values)) if all_rms_jerk_values else np.nan
+        return results
+
+    # -------------------------------------------------------------------------
+    # Compute All Metrics
+    # -------------------------------------------------------------------------
+    def compute_all_metrics(self):
+        self.yaw0 = self._compute_shoulders_vector_angle(self.data0, pose_id=0)
+        self.yaw1 = self._compute_shoulders_vector_angle(self.data1, pose_id=1)
+
+        self.disp0 = self._compute_delta_keypoints(self.data0)
+        self.disp1 = self._compute_delta_keypoints(self.data1)
 
         self.metrics0 = {
-            "yaw_metrics": self._compute_yaw_metrics(self.yaw0),
-            "engagement_metrics": self._compute_engagement_features(self.yaw0),
-            "depth_metrics": self._compute_depth_from_initial_disp(self.disp0)
+            "shoulders_vector_angle": self._compute_vector_angles_metrics(self.yaw0),
+            "delta_shoulders_midpoint": self._compute_delta_shoulders_midpoint(self.disp0, pose_id=0),
+            "speed": self._compute_speed(self.data0),
+            "mean_squared_jerk": self._compute_mean_jerk(self.data0)
         }
 
         self.metrics1 = {
-            "yaw_metrics": self._compute_yaw_metrics(self.yaw1),
-            "engagement_metrics": self._compute_engagement_features(self.yaw1),
-            "depth_metrics": self._compute_depth_from_initial_disp(self.disp1)
+            "shoulders_vector_angle": self._compute_vector_angles_metrics(self.yaw1),
+            "delta_shoulders_midpoint": self._compute_delta_shoulders_midpoint(self.disp1, pose_id=1),
+            "speed": self._compute_speed(self.data1),
+            "mean_squared_jerk": self._compute_mean_jerk(self.data1)
         }
 
-        self.other_metrics = {"proximity_metrics": self._compute_proximity_metrics(),
+        self.other_metrics = {"distance": self._compute_participants_distance(),
+                            "absolute_final_distance": self._compute_absolute_distance(),
                             "inward_movement": self._compare_inward_movement_x()}
 
+    # -------------------------------------------------------------------------
+    # Print Metrics
+    # -------------------------------------------------------------------------
     def print_metrics(self):
         metrics0_flat = {
-            'yaw_mean': self.metrics0['yaw_metrics']['mean_yaw'],
-            'yaw_amplitude': self.metrics0['engagement_metrics']['amplitude'],
-            'yaw_std_dev': self.metrics0['engagement_metrics']['std_dev'],
-            'depth_mean': self.metrics0['depth_metrics']['mean_depth'],
-            'depth_amplitude': self.metrics0['depth_metrics']['depth_range'],
+            'shoulders_vector_angle_mean': self.metrics0['shoulders_vector_angle']['mean'],
+            'shoulders_vector_angle_amp': self.metrics0['shoulders_vector_angle']['amp'],
+            'deltaX_shoulders_midpoint_mean': self.metrics0['delta_shoulders_midpoint']['delta_x_mean'],
+            'deltaX_shoulders_midpoint_amp': self.metrics0['delta_shoulders_midpoint']['delta_x_amp'],
+            'deltaZ_shoulders_midpoint_mean': self.metrics0['delta_shoulders_midpoint']['delta_z_mean'],
+            'deltaZ_shoulders_midpoint_amp': self.metrics0['delta_shoulders_midpoint']['delta_z_amp'],
+            'speed_mean': self.metrics0['speed']['overall']['mean'],
+            'speed_std': self.metrics0['speed']['overall']['std'],
+            'mean_squared_jerk': self.metrics0['mean_squared_jerk']['overall']
         }
 
         metrics1_flat = {
-            'yaw_mean': self.metrics1['yaw_metrics']['mean_yaw'],
-            'yaw_amplitude': self.metrics1['engagement_metrics']['amplitude'],
-            'yaw_std_dev': self.metrics1['engagement_metrics']['std_dev'],
-            'depth_mean': self.metrics1['depth_metrics']['mean_depth'],
-            'depth_amplitude': self.metrics1['depth_metrics']['depth_range'],
+            'shoulders_vector_angle_mean': self.metrics1['shoulders_vector_angle']['mean'],
+            'shoulders_vector_angle_amp': self.metrics1['shoulders_vector_angle']['amp'],
+            'deltaX_shoulders_midpoint_mean': self.metrics1['delta_shoulders_midpoint']['delta_x_mean'],
+            'deltaX_shoulders_midpoint_amp': self.metrics1['delta_shoulders_midpoint']['delta_x_amp'],
+            'deltaZ_shoulders_midpoint_mean': self.metrics1['delta_shoulders_midpoint']['delta_z_mean'],
+            'deltaZ_shoulders_midpoint_amp': self.metrics1['delta_shoulders_midpoint']['delta_z_amp'],
+            'speed_mean': self.metrics1['speed']['overall']['mean'],
+            'speed_std': self.metrics1['speed']['overall']['std'],
+            'mean_squared_jerk': self.metrics1['mean_squared_jerk']['overall']
         }
 
         other_metrics_flat = {
-            'mean_proximity': self.other_metrics['proximity_metrics']['mean_distance'],
-            'proximity_range': self.other_metrics['proximity_metrics']['distance_range'],
+            'participants_distance_mean': self.other_metrics['distance']['mean'],
+            'participants_distance_amp': self.other_metrics['distance']['amp'],
+            'absolute_final_distance': self.other_metrics['absolute_final_distance'],
             'inward_movement_pose': self.other_metrics['inward_movement']['more_inward_pose'],
         }
 
@@ -390,11 +446,15 @@ class PoseMetrics:
         })
 
         df.index = [
-            'Yaw Mean (°)',
-            'Yaw Amplitude (°)',
-            'Yaw Std Dev (°)',
-            'Depth Mean (m)',
-            'Depth Amplitude (m)',
+            'Shoulders Vector Angle Mean (°)',
+            'Shoulders Vector Angle Amplitude (°)',
+            'ΔX Shoulders Midpoint Mean (m)',
+            'ΔX Shoulders Midpoint Amplitude (m)',
+            'ΔZ Shoulders Midpoint Mean (m)',
+            'ΔZ Shoulders Midpoint Amplitude (m)',
+            'Speed Mean (m/s)',
+            'Speed SD (m/s)',
+            'Mean Jerk (m/s^3)',
         ]
         df = df.round(3)
 
@@ -407,8 +467,9 @@ class PoseMetrics:
         })
 
         _df.index = [
-            'Mean Proximity (m)',
-            'Proximity Range (m)',
+            'Participants Distance Mean (m)',
+            'Participants Distance Amplitude (m)',
+            'ΔDistance (initial - final) (m)',
             'Inward Movement Pose (0 or 1)',
         ]
         _df = _df.round(3)
@@ -447,7 +508,10 @@ class PoseMetrics:
 
         df_combined.to_csv(f"{self.results_path}/displacement_vector_by_pose_and_keypoint.csv")
 
-    def plot_yaw_over_time(self):
+    # -------------------------------------------------------------------------
+    # Plots
+    # -------------------------------------------------------------------------
+    def plot_shoulders_vector_angle(self):
         if self.yaw0 is None or self.yaw1 is None:
             self.compute_all_metrics()
 
@@ -455,17 +519,25 @@ class PoseMetrics:
         plt.plot(self.yaw0, label="Pose 0", color='blue')
         plt.plot(self.yaw1, label="Pose 1", color='orange')
         plt.xlabel("Frame")
-        plt.ylabel("Yaw (°)")
+        plt.ylabel("Angle (°)")
         plt.title("Shoulders Vector Angle Over Time")
         plt.legend()
         plt.grid(True)
+
+        if self.window_frames:
+            for label, (start, _) in self.window_frames.items():
+                plt.axvline(x=start, color='black', linestyle='--', linewidth=1)
+                plt.text(start, plt.ylim()[0], label, rotation=90,
+                        verticalalignment='bottom', horizontalalignment='center',
+                        fontsize=8, color='black')
+
         plt.tight_layout()
         # plt.show()
         
-        save_path = f"{self.results_path}/figures/yaw_over_time.png"
+        save_path = f"{self.results_path}/figures/shoulders_vector_angle.png"
         plt.savefig(save_path, dpi=300)
 
-    def plot_proximity_over_time(self):
+    def plot_participants_delta_distance(self):
         total_frames = int(max(self.data0['frame'].max(), self.data1['frame'].max())) + 1
         delta_distances = np.full(total_frames, np.nan)
 
@@ -486,12 +558,21 @@ class PoseMetrics:
             # else: delta_distances[frame] remains np.nan
 
         if initial_distance is None:
-            print("⚠️ No valid proximity data found.")
+            print("⚠️ No valid distance data found.")
             return
 
         plt.figure(figsize=(10, 5))
         plt.plot(np.arange(total_frames), delta_distances, label="Δ Shoulders Distance", color="darkorange")
         plt.axhline(0, color='gray', linestyle='--', linewidth=1)
+
+        if self.window_frames:
+            for label, (start, _) in self.window_frames.items():
+                plt.axvline(x=start, color='black', linestyle='--', linewidth=1)
+                plt.text(start, plt.ylim()[0], label, rotation=90,
+                        verticalalignment='bottom', horizontalalignment='center',
+                        fontsize=8, color='black')
+
+
         plt.xlabel("Frame")
         plt.ylabel("Δ Distance (m)")
         plt.title("Shoulders Distance Over Time")
@@ -503,49 +584,7 @@ class PoseMetrics:
         save_path = f"{self.results_path}/figures/distance_over_time.png"
         plt.savefig(save_path, dpi=300)
 
-    def plot_displacement_all_keypoints(self):
-        keypoints = self.keypoints_dict()
-
-        for pose_label, data, color in [("Pose 0", self.data0, 'blue'), ("Pose 1", self.data1, 'orange')]:
-            total_frames = int(data['frame'].max()) + 1
-            n_kpts = len(keypoints)
-            n_cols = 4
-            n_rows = int(np.ceil(n_kpts / n_cols))
-
-            fig, axs = plt.subplots(n_rows, n_cols, figsize=(n_cols * 5, n_rows * 2.5), sharex=True)
-            axs = axs.flatten()
-
-            for i, (kp_id, kp_name) in enumerate(keypoints.items()):
-                kp_data = data[data['keypoint'] == kp_id].sort_values('frame')
-                frames = kp_data['frame'].values
-                coords = kp_data[['x', 'y', 'z']].values
-                valid_mask = ~np.isnan(coords).any(axis=1)
-                valid_frames = frames[valid_mask]
-                valid_coords = coords[valid_mask]
-                displacement = np.full(total_frames, np.nan)
-                displacements = np.linalg.norm(np.diff(valid_coords, axis=0), axis=1)
-                displacement_frames = valid_frames[:-1]
-                for f, d in zip(displacement_frames, displacements):
-                    displacement[int(f)] = d
-
-                axs[i].plot(np.arange(total_frames), displacement, color=color)
-                axs[i].set_title(kp_name)
-                axs[i].grid(True)
-
-            for j in range(i + 1, len(axs)):
-                fig.delaxes(axs[j])
-
-            fig.suptitle(f"Displacement Over Time — {pose_label}", fontsize=16)
-            fig.supxlabel("Frame")
-            fig.supylabel("Displacement (m)")
-            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-            # plt.show()
-
-            save_path = f"{self.results_path}/figures/displacement_over_time_{pose_label}.png"
-            plt.savefig(save_path, dpi=300)
-
-
-    def plot_displacement_all_keypoints_initial_point(self):
+    def plot_delta_displacement_keypoints(self):
         keypoints = self.keypoints_dict()
 
         for pose_label, data, color in [("Pose 0", self.data0, 'blue'), ("Pose 1", self.data1, 'orange')]:
@@ -578,6 +617,14 @@ class PoseMetrics:
                 axs[i].plot(np.arange(total_frames), dx, label='Δx', color='red')
                 axs[i].plot(np.arange(total_frames), dy, label='Δy', color='green')
                 axs[i].plot(np.arange(total_frames), dz, label='Δz', color='blue')
+
+                if self.window_frames:
+                    for label, (start, _) in self.window_frames.items():
+                        axs[i].axvline(x=start, color='black', linestyle='--', linewidth=1)
+                        axs[i].text(start, axs[i].get_ylim()[0], label, rotation=90,
+                                    verticalalignment='bottom', horizontalalignment='center',
+                                    fontsize=8, color='black')
+
                 axs[i].set_title(kp_name)
                 axs[i].grid(True)
                 axs[i].legend()
@@ -585,7 +632,7 @@ class PoseMetrics:
             for j in range(i + 1, len(axs)):
                 fig.delaxes(axs[j])
 
-            fig.suptitle(f"Displacement (x, y, z) Over Time — {pose_label}", fontsize=16)
+            fig.suptitle(f"Keypoints (ΔX, ΔY, ΔZ) Over Time — {pose_label}", fontsize=16)
             fig.supxlabel("Frame")
             fig.supylabel("Displacement (m)")
             plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -593,6 +640,46 @@ class PoseMetrics:
 
             save_path = f"{self.results_path}/figures/displacement_over_time_delta_{pose_label}.png"
             plt.savefig(save_path, dpi=300)
+
+    def plot_speed_over_time(self, fs=30.0):
+        """
+        Plot speed over time for each keypoint in Pose 0 and Pose 1.
+        """
+        keypoints = self.keypoints_dict()
+
+        for pose_label, data, color in [("Pose 0", self.data0, 'blue'), ("Pose 1", self.data1, 'orange')]:
+            plt.figure(figsize=(12, 6))
+
+            for kpt_id, kpt_name in keypoints.items():
+                coords = data[data['keypoint'] == kpt_id][['x', 'y', 'z']].values
+                coords = np.asarray(coords, dtype=np.float64)
+                coords = coords[~np.isnan(coords).any(axis=1)]
+
+                if len(coords) < 2:
+                    continue
+
+                velocity = np.diff(coords, axis=0) * fs
+                speed = np.linalg.norm(velocity, axis=1)
+
+                plt.plot(speed, label=kpt_name, alpha=0.6)
+
+            if self.window_frames:
+                for label, (start, _) in self.window_frames.items():
+                    plt.axvline(x=start, color='black', linestyle='--', linewidth=1)
+                    plt.text(start, plt.ylim()[0], label, rotation=90,
+                            verticalalignment='bottom', horizontalalignment='center',
+                            fontsize=8, color='black')
+
+            plt.title(f"Speed Over Time — {pose_label}")
+            plt.xlabel("Frame")
+            plt.ylabel("Speed (m/s)")
+            plt.legend(loc='upper right', bbox_to_anchor=(1.15, 1.0))
+            plt.tight_layout()
+            plt.grid(True)
+
+            save_path = f"{self.results_path}/figures/speed_over_time_{pose_label.replace(' ', '_')}.png"
+            plt.savefig(save_path, dpi=300)
+            plt.close()
 
     def plot_upper_body_frame(self, frame=1000):
         keypoints = self.keypoints_dict()

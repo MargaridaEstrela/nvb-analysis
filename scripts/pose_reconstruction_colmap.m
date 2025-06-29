@@ -17,12 +17,12 @@ P3 = compute_camera_matrix(cameraPoses(3), cam3_params);
 
 
 %% Handle MediaPipe Data
-% Set image resolution (used for converting normalized coords to pixel coords)
+% Set image resolution
 image_width = 1920;
 image_height = 1080;
 
 % Load MediaPipe CSV keypoint data from both camera views
-path_results = '../../../experimental_studies/gaips/24/results/';
+path_results = '../../../experimental_studies/gaips/1/results/'; % Change this to a specific experimental session
 data_cam1 = readmatrix(fullfile(path_results, 'mediapipe', 'left_fixed.csv'));
 data_cam2 = readmatrix(fullfile(path_results, 'mediapipe', 'right_fixed.csv'));
 data_cam3 = readmatrix(fullfile(path_results, 'mediapipe', 'top_fixed.csv'));
@@ -148,7 +148,7 @@ writetable(array2table(pose1_3D, ...
 
 
 %% Plot results
-Visualize the 3D skeletons over time
+% Visualize the 3D skeletons over time
 plot_skeletons(all_poses);
 
 

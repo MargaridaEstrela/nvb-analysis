@@ -7,7 +7,7 @@ cd ~/Documents/projects/repos/OpenFace || exit 1
 BASE_PATH=~/Documents/projects/gaips/emoshow/experimental_studies/gaips
 
 # Loop over session folders (2 to 10, change as needed)
-for i in {3..24}; do
+for i in {1..31}; do
   VIDEO_PATH="$BASE_PATH/$i/videos/top.mp4"
   OUTPUT_DIR="$BASE_PATH/$i/results"
 

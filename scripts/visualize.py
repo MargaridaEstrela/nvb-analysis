@@ -1,197 +1,171 @@
 import os
-import sys
 import cv2
+import sys
 import numpy as np
 import pandas as pd
 import argparse
 import rerun as rr
 import rerun.blueprint as rrb
 
-from lists import POSE_CONNECTIONS, CONNECTION_COLORS
+def find_videos(folder):
+    # Customize these names if needed
+    video_top = os.path.join(folder, "videos/top.mp4")
+    video_left = os.path.join(folder, "videos/left.mp4")
+    video_right = os.path.join(folder, "videos/right.mp4")
 
-SCALE_FACTOR = 50
+    for path in [video_top, video_left, video_right]:
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Missing video: {path}")
 
-def get_video_info(video_path):
-    cap = cv2.VideoCapture(video_path)
+    return video_top, video_left, video_right
+
+def get_video_info(path):
+    cap = cv2.VideoCapture(path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    duration = frame_count / fps if fps > 0 else 0
     cap.release()
-    
-    return fps, frame_count, width, height, duration
+    return int(fps), int(frame_count)
 
-def load_keypoints(skeletons_data):
-    keypoints = {}
-    for _, row in skeletons_data.iterrows():
-        frame, pose_id, landmark_id, x, y, z = row
-        if frame not in keypoints:
-            keypoints[frame] = {}
-        if pose_id not in keypoints[frame]:
-            keypoints[frame][pose_id] = []
-        keypoints[frame][pose_id].append((x, y, z))
-    return keypoints
 
-def visualize(video_path, experiment_name, skeletons, gaze_0, gaze_1, au_0, au_1, args):
-    fps, frame_count, width, height, duration = get_video_info(video_path)
-    print(f"FPS: {fps}, Total Frames: {frame_count}, Duration: {duration} sec")
+def load_pose_data(folder):
+    path0 = os.path.join(folder, "results", "pose0_processed.csv")
+    path1 = os.path.join(folder, "results", "pose1_processed.csv")
+
+    if not os.path.exists(path0) or not os.path.exists(path1):
+        raise FileNotFoundError("Missing pose0 or pose1 CSV in 'results' folder.")
+
+    df0 = pd.read_csv(path0)
+    df1 = pd.read_csv(path1)
+
+    return df0, df1
+
+def log_3d_skeletons(pose_df, label, color, frame_idx):
+    frame_data = pose_df[pose_df["frame"] == frame_idx]
+    if frame_data.empty:
+        return
+
+    scale_factor = 100
+
+    # Keypoint positions
+    positions = frame_data[["x", "y", "z"]].to_numpy()
+    positions = positions * scale_factor
+
+    transform = np.array([
+        [1,  0,  0],
+        [0, -1,  0],
+        [0,  0,  1]
+    ])
     
-    keypoints = load_keypoints(skeletons)
+    positions = positions @ transform
     
-    cap = cv2.VideoCapture(video_path)
+    rr.log(f"/skeletons/{label}/keypoints", rr.Points3D(
+        positions,
+        colors=color,
+        radii=5  # Adjust dot size
+    ))
+
+    # Skeleton connections
+    connections = [
+        (0, 1), (1, 2), (2, 3), (3, 7),
+        (0, 4), (4, 5), (5, 6), (6, 8),
+        (9, 10), (11, 12),
+        (11, 13), (13, 15), (15, 17), (15, 19), (17, 19), (15, 21),
+        (12, 14), (14, 16), (16, 18), (16, 20), (18, 20), (16, 22),
+    ]
+
+    lines = []
+    
+    for i, j in connections:
+        try:
+            p1 = frame_data.loc[frame_data["keypoint"] == i, ["x", "y", "z"]].values[0]
+            p2 = frame_data.loc[frame_data["keypoint"] == j, ["x", "y", "z"]].values[0]
+            p1 = (p1 * scale_factor) @ transform
+            p2 = (p2 * scale_factor) @ transform
+            lines.append(np.array([p1, p2]))
+        except IndexError:
+            continue  # One or both points missing
+
+    if lines:
+        rr.log(f"/skeletons/{label}/bones", rr.LineStrips3D(
+            lines,
+            colors=color,
+            radii=2  # Thicker lines
+        ))
+
         
+def visualize(video_top, video_bottom_left, video_bottom_right, args, pose0_df, pose1_df):
+    cap_top = cv2.VideoCapture(video_top)
+    cap_left = cv2.VideoCapture(video_bottom_left)
+    cap_right = cv2.VideoCapture(video_bottom_right)
+
+    _, n_top = get_video_info(video_top)
+    _, n_left = get_video_info(video_bottom_left)
+    _, n_right = get_video_info(video_bottom_right)
+    max_frames = max(n_top, n_left, n_right)
+
     rr.script_setup(
         args,
-        application_id=f"human_pose_{experiment_name}",
+        application_id="video_grid_viewer",
         default_blueprint=rrb.Blueprint(
             rrb.Vertical(
-                rrb.Spatial2DView(origin=f"/image", name="Video"),
-                rrb.Horizontal(  # Horizontal row with two sections
-                    rrb.Vertical(  # Left section: Gaze classification
-                        rrb.Tabs(
-                            rrb.TextDocumentView(origin=f"/gaze_0/classification", name="Gaze 0"),
-                            rrb.TextDocumentView(origin=f"/gaze_1/classification", name="Gaze 1"),
-                        ),
-                    ),
-                    rrb.Vertical(  # Right section: AU data inside tabs
-                        rrb.Tabs(
-                            rrb.TimeSeriesView(origin=f"AUs_0", name="AUs_0"),
-                            rrb.TimeSeriesView(origin=f"AUs_1", name="AUs_1"),
-                        ),
-                    ),
+                rrb.Spatial2DView(origin="/top", name="Top Video"),
+                rrb.Horizontal(
+                    rrb.Spatial2DView(origin="/left", name="Left Video"),
+                    rrb.Spatial2DView(origin="/right", name="Right Video"),
                 ),
+                rrb.Horizontal(  # ⬅ NEW row for two 3D skeleton views
+                    rrb.Spatial3DView(origin="/skeletons/pose0", name="Pose 0 (Left)"),
+                    rrb.Spatial3DView(origin="/skeletons/pose1", name="Pose 1 (Right)"),
+                )
             )
         ),
     )
 
-    for frame_idx in range(frame_count):
-        success, frame = cap.read()
-        if not success:
-            break  # Stop when the video ends
-        
+    for frame_idx in range(max_frames):
         rr.set_time_sequence("frame", frame_idx)
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        rr.log(f"{experiment_name}/image", rr.Image(frame_rgb).compress(jpeg_quality=50))
-        
-        # Gaze Data
-        if "frame" in gaze_0.columns:
-            frame_gaze_0 = gaze_0[gaze_0["frame"] == frame_idx]
-        else:
-            frame_gaze_0 = gaze_0.iloc[frame_idx % len(gaze_0)]
 
-        if "frame" in gaze_1.columns:
-            frame_gaze_1 = gaze_1[gaze_1["frame"] == frame_idx]
-        else:
-            frame_gaze_1 = gaze_1.iloc[frame_idx % len(gaze_1)]
+        def read_frame(cap):
+            success, frame = cap.read()
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) if success else None
 
-        # Skeleton Data
-        if frame_idx in keypoints:
-            for pose_id, landmarks in keypoints[frame_idx].items():
-                # Convert landmarks list to a dictionary for fast lookup
-                landmark_dict = {i: (x * width, y * height) for i, (x, y, _) in enumerate(landmarks) if i < 22}
-                
-                rr.log(
-                    f"{experiment_name}/pose_{pose_id}", 
-                    rr.Points2D(
-                        positions=np.array(list(landmark_dict.values())), 
-                        colors=np.array([[1, 1, 1]] * len(landmark_dict)),  # White color
-                        radii=5.0
-                    )
-                )
-                # Log all keypoint connections
-                connection_lines = []
-                for idx, (p1, p2) in enumerate(POSE_CONNECTIONS):
-                    if p1 in landmark_dict and p2 in landmark_dict and idx < len(CONNECTION_COLORS):
-                        rr.log(
-                            f"{experiment_name}/connections/pose_{pose_id}/connection_{p1}_{p2}",
-                            rr.LineStrips2D(
-                                [np.array([landmark_dict[p1], landmark_dict[p2]])],
-                                colors=[CONNECTION_COLORS[idx]],  # Green color
-                                radii=2.5  
-                            )
-                        )
-                        
-        # Gaze vectors
-        if not frame_gaze_0.empty:
-            gaze_start_0 = frame_gaze_0[["Gaze_Pos_X", "Gaze_Pos_Y"]].values
-            gaze_direction_0 = frame_gaze_0[["Gaze_Dir_X", "Gaze_Dir_Y"]].values
-            classification_0 = frame_gaze_0["Classification"]
-            rr.log(f"{experiment_name}/gaze_0", rr.Arrows2D(origins=gaze_start_0, vectors=gaze_direction_0*SCALE_FACTOR, radii=3.0))
-            rr.log("Gaze 0", rr.TextDocument(classification_0, media_type=rr.MediaType.MARKDOWN))
-            
-        if not frame_gaze_1.empty:
-            gaze_start_1 = frame_gaze_1[["Gaze_Pos_X", "Gaze_Pos_Y"]].values
-            gaze_direction_1 = frame_gaze_1[["Gaze_Dir_X", "Gaze_Dir_Y"]].values
-            classification_1 = frame_gaze_1["Classification"]
-            rr.log(f"{experiment_name}/gaze_1", rr.Arrows2D(origins=gaze_start_1, vectors=gaze_direction_1*SCALE_FACTOR, radii=3.0)) 
-            rr.log("Gaze 1", rr.TextDocument(classification_1, media_type=rr.MediaType.MARKDOWN))
+        top_frame = read_frame(cap_top)
+        left_frame = read_frame(cap_left)
+        right_frame = read_frame(cap_right)
 
-        # AU Data Logging
-        if frame_idx in au_0["frame"].values:
-            frame_au_0 = au_0[au_0["frame"] == frame_idx].drop(columns=["frame"])
-            for au_name, au_value in frame_au_0.items():
-                value = float(au_value.iloc[0])
-                rr.log(f"AUs_0/{au_name}", rr.Scalar(value))
+        if top_frame is not None:
+            rr.log("/top", rr.Image(top_frame).compress(jpeg_quality=75))
+        if left_frame is not None:
+            rr.log("/left", rr.Image(left_frame).compress(jpeg_quality=75))
+        if right_frame is not None:
+            rr.log("/right", rr.Image(right_frame).compress(jpeg_quality=75))
 
-        if frame_idx in au_1["frame"].values:
-            frame_au_1 = au_1[au_1["frame"] == frame_idx].drop(columns=["frame"])
-            for au_name, au_value in frame_au_1.items():
-                value = float(au_value.iloc[0])
-                rr.log(f"AUs_1/{au_name}", rr.Scalar(value))
-            
-    cap.release()
-    print(f"Pose overlay for {experiment_name} logged to Rerun!")
+        # Log 3D skeletons
+        log_3d_skeletons(pose0_df, "pose0", [255, 0, 0], frame_idx)
+        log_3d_skeletons(pose1_df, "pose1", [0, 255, 0], frame_idx)
+
+    print("Done logging video frames and 3D skeletons to Rerun.")
+    cap_top.release()
+    cap_left.release()
+    cap_right.release()
+
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python visualize.py <experiment_id>")
-        sys.exit(1)
-
-    experiment_name = sys.argv[1]
-    folder = os.path.join("../archive", experiment_name)
-
-    video_path = os.path.join(folder, "piloto.mp4")
-    skeletons_csv_path = os.path.join(folder, "pipeline.csv")
-    gaze_0_csv_path = os.path.join(folder, "gaze_0.csv")
-    gaze_1_csv_path = os.path.join(folder, "gaze_1.csv")
-    au_0_csv_path = os.path.join(folder, "au_0.csv")
-    au_1_csv_path = os.path.join(folder, "au_1.csv")
-
-    print(f"Checking files in {folder}...")
-
-    missing_files = [f for f in [video_path, skeletons_csv_path, gaze_0_csv_path, 
-                                gaze_1_csv_path, au_0_csv_path, au_1_csv_path] if not os.path.exists(f)]
-
-    if missing_files:
-        print("Error: The following files are missing:")
-        for f in missing_files:
-            print(f" - {f}")
-        sys.exit(1)
-
-    print("All files found! Loading data...")
-
-    skeletons = pd.read_csv(skeletons_csv_path)
-    gaze_0 = pd.read_csv(gaze_0_csv_path)
-    gaze_1 = pd.read_csv(gaze_1_csv_path)
-    au_0 = pd.read_csv(au_0_csv_path)
-    au_1 = pd.read_csv(au_1_csv_path)
-
-    print(f"Loaded...")
-    print(f"Skeleton frames: {len(skeletons)} ")
-    print(f"gaze_0 entries: {len(gaze_0)}")
-    print(f"Gaze_1 entries: {len(gaze_1)}")
-    print(f"AU_0 entries: {len(au_0)}")
-    print(f"AU_1 entries: {len(au_1)}")
-
     parser = argparse.ArgumentParser()
+    parser.add_argument("experiment_folder", help="Path to the experiment folder containing the videos and results")
     rr.script_add_args(parser)
-    rerun_args, _ = parser.parse_known_args()
-    
-    print("Starting visualization...")
-    visualize(video_path, experiment_name, skeletons, gaze_0, gaze_1, au_0, au_1, rerun_args)
+    args = parser.parse_args()
 
-    print("Visualization completed!")
-    
+    print(f"Loading experiment from: {args.experiment_folder}")
+
+    try:
+        video_top, video_left, video_right = find_videos(args.experiment_folder)
+        pose0_df, pose1_df = load_pose_data(args.experiment_folder)
+    except FileNotFoundError as e:
+        print(e)
+        sys.exit(1)
+
+    visualize(video_top, video_left, video_right, args, pose0_df, pose1_df)
+
+
 if __name__ == "__main__":
     main()

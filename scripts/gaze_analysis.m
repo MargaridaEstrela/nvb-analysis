@@ -1,7 +1,7 @@
 clear; close all; clc;
 
 %% Load Gaze Data
-session_path = '../../../experimental_studies/gaips/3/';
+session_path = '../../../experimental_studies/gaips/1/';
 data = readtable(fullfile(session_path, 'results/top_tracked.csv'));
 
 %% Load Video and Select Positions
