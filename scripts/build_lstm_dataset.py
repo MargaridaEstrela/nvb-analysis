@@ -138,7 +138,20 @@ def interpolate_keypoints(data):
         )
         all_processed.append(kpt_data)
     return pd.concat(all_processed).sort_values(['frame', 'keypoint']).reset_index(drop=True)
-    
+
+def interpolate_keypoints_filtered(data):
+    all_processed = []
+    filtered_keypoints = [0, 2, 5, 11, 12, 13, 14, 15, 16]
+    for kpt in data['keypoint'].unique():
+        if kpt not in filtered_keypoints:
+            continue
+        kpt_data = data[data['keypoint'] == kpt].sort_values('frame').copy()
+        kpt_data[['x', 'y', 'z']] = kpt_data[['x', 'y', 'z']].interpolate(
+            method='linear', limit_direction='both'
+        )
+        all_processed.append(kpt_data)
+    return pd.concat(all_processed).sort_values(['frame', 'keypoint']).reset_index(drop=True)
+
 def compute_displacement_velocity(pose, fps=30, flip_x=False):
     """
     Computes displacement and velocity per keypoint and returns a DataFrame
@@ -186,7 +199,7 @@ def main():
 
     sessions_p = sys.argv[1]
     sessions_path = Path(sessions_p)
-    session_ids = range(1, 32)
+    session_ids = [i for i in range(1, 32) if i != 23]
     
     for session_id in session_ids:
         if not (sessions_path / f"{session_id}").exists():
@@ -206,15 +219,16 @@ def main():
     print(f"Minimum number of frames across sessions: {min(frame_counts)}")
     
     # Create a folder to save all the results from pose metrics per session
-    pose_metrics_path = sessions_path / "pose_metrics /"
-    pose_metrics_path.mkdir(parents=True, exist_ok=True)
+    pose_metrics_path = sessions_path / "pose_metrics_filtered"
+    if not pose_metrics_path.exists():
+        pose_metrics_path.mkdir(parents=True, exist_ok=True)
     
     openface_path = sessions_path / f"{session_id}" / "results" / "openface"
     
     for session_id in session_ids:
         pose0, pose1 = normalize_frames(sessions_path, session_ids, min(frame_counts))
-        pose0 = interpolate_keypoints(pose0)
-        pose1 = interpolate_keypoints(pose1)
+        pose0 = interpolate_keypoints_filtered(pose0)
+        pose1 = interpolate_keypoints_filtered(pose1)
         
         pose0_metrics = compute_displacement_velocity(pose0, flip_x=False)
         pose1_metrics = compute_displacement_velocity(pose1, flip_x=True)
@@ -228,9 +242,23 @@ def main():
         # Merge them all on frame (or drop "frame" after aligning)
         merged0 = pose0_metrics.merge(au0, on="frame", how="left").fillna(0.0)
         merged1 = pose1_metrics.merge(au1, on="frame", how="left").fillna(0.0)
+
+        # Drop AUs_c (drop columns ending with '_c')
+        merged0 = merged0.loc[:, ~merged0.columns.str.endswith('_c')]
+        merged1 = merged1.loc[:, ~merged1.columns.str.endswith('_c')]
             
         merged0.drop(columns=["frame"]).to_csv(pose_metrics_path / f"session{session_id}_0.csv", index=False)
         merged1.drop(columns=["frame"]).to_csv(pose_metrics_path / f"session{session_id}_1.csv", index=False)
+
+        # Rename columns
+        merged0 = merged0.rename(columns={col: f"{col}_p0" for col in merged0.columns if col != "frame"})
+        merged1 = merged1.rename(columns={col: f"{col}_p1" for col in merged1.columns if col != "frame"})
+
+        # Combine by frame
+        combined = pd.concat([merged0, merged1.drop(columns="frame")], axis=1)
+
+        # Save single CSV with combined features
+        combined.to_csv(pose_metrics_path / f"session{session_id}_combined.csv", index=False)
     
 if __name__ == "__main__":
     main()
