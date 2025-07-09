@@ -127,8 +127,6 @@ def normalize_frames(sessions_path, session_ids, min_frames):
         except Exception as e:
             print(f"[ERROR] Failed to normalize frames for {session_id}: {e}")
             
-    return pose0, pose1 
-
 def interpolate_keypoints(data):
     all_processed = []
     for kpt in data['keypoint'].unique():
@@ -219,14 +217,24 @@ def main():
     print(f"Minimum number of frames across sessions: {min(frame_counts)}")
     
     # Create a folder to save all the results from pose metrics per session
-    pose_metrics_path = sessions_path / "pose_metrics_filtered"
+    pose_metrics_path = sessions_path / "pose_metrics_"
     if not pose_metrics_path.exists():
         pose_metrics_path.mkdir(parents=True, exist_ok=True)
     
     openface_path = sessions_path / f"{session_id}" / "results" / "openface"
+    normalize_frames(sessions_path, session_ids, min(frame_counts))
     
     for session_id in session_ids:
-        pose0, pose1 = normalize_frames(sessions_path, session_ids, min(frame_counts))
+        pose0_path = sessions_path / f"{session_id}" / "results" / "pose0.csv"
+        pose1_path = sessions_path / f"{session_id}" / "results" / "pose1.csv"
+
+        if not pose0_path.exists() or not pose1_path.exists():
+            print(f"[WARNING] Missing normalized pose files for session {session_id}")
+            continue
+
+        pose0 = pd.read_csv(pose0_path)
+        pose1 = pd.read_csv(pose1_path)
+
         pose0 = interpolate_keypoints_filtered(pose0)
         pose1 = interpolate_keypoints_filtered(pose1)
         
@@ -236,19 +244,24 @@ def main():
         # Load AU and gaze for each person
         au0 = pd.read_csv(openface_path / "au_0.csv")
         au1 = pd.read_csv(openface_path / "au_1.csv")
+
+        au0 = au0.drop_duplicates(subset='frame')
+        au1 = au1.drop_duplicates(subset='frame')
         # gaze0 = pd.read_csv(openface_path / "gaze_0.csv")
         # gaze1 = pd.read_csv(openface_path / "gaze_1.csv")
 
-        # Merge them all on frame (or drop "frame" after aligning)
         merged0 = pose0_metrics.merge(au0, on="frame", how="left").fillna(0.0)
         merged1 = pose1_metrics.merge(au1, on="frame", how="left").fillna(0.0)
 
         # Drop AUs_c (drop columns ending with '_c')
         merged0 = merged0.loc[:, ~merged0.columns.str.endswith('_c')]
         merged1 = merged1.loc[:, ~merged1.columns.str.endswith('_c')]
-            
-        merged0.drop(columns=["frame"]).to_csv(pose_metrics_path / f"session{session_id}_0.csv", index=False)
-        merged1.drop(columns=["frame"]).to_csv(pose_metrics_path / f"session{session_id}_1.csv", index=False)
+
+        merged0_ = merged0.drop(columns=["frame"])
+        merged1_ = merged1.drop(columns=["frame"])
+
+        merged0_.to_csv(pose_metrics_path / f"session{session_id}_0.csv", index=False)
+        merged1_.to_csv(pose_metrics_path / f"session{session_id}_1.csv", index=False)
 
         # Rename columns
         merged0 = merged0.rename(columns={col: f"{col}_p0" for col in merged0.columns if col != "frame"})

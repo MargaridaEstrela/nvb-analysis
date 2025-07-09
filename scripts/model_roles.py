@@ -5,11 +5,14 @@ import joblib
 import pandas as pd
 import tensorflow as tf
 import matplotlib.pyplot as plt
+import seaborn as sns
 
+from collections import defaultdict, Counter
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.class_weight import compute_class_weight
+from sklearn.ensemble import RandomForestClassifier
 
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.layers import LSTM, Dense, Masking, Dropout, Bidirectional, Input, GlobalAveragePooling1D
@@ -20,10 +23,10 @@ from tensorflow.keras.regularizers import l2
 
 # --- Config ---
 DATA_DIR = "/Users/margaridaestrela/Documents/projects/gaips/emoshow/experimental_studies/gaips/pose_metrics/"
-LABELS_FILE = "unreliable_labels.json"
+LABELS_FILE = "role_labels.json"
 SEQUENCE_LENGTH = 400
 STEP_SIZE = 200
-NUM_CLASSES = 2
+NUM_CLASSES = 3
 
 # --- Load labels ---
 with open(LABELS_FILE, "r") as f:
@@ -112,6 +115,56 @@ print("Class weights:", class_weight_dict)
 # --- Train-test split ---
 # Dividing the dataset into training and validation sets
 X_train, X_val, y_train, y_val = train_test_split(X, y_cat, test_size=0.2, stratify=y)
+
+
+X_flat = X.reshape(X.shape[0], -1)
+X_train_rf, X_val_rf, y_train_rf, y_val_rf = train_test_split(
+    X_flat, y, test_size=0.2, stratify=y, random_state=42
+)
+clf = RandomForestClassifier(class_weight='balanced', random_state=42)
+clf.fit(X_train_rf, y_train_rf)
+print("Random Forest accuracy:", clf.score(X_val_rf, y_val_rf))
+
+importances = clf.feature_importances_
+
+# Sort features
+indices = np.argsort(importances)[::-1]
+top_k = min(100, len(importances)) 
+
+
+if hasattr(X, 'columns'):
+    feature_names = X.columns
+else:
+    feature_names = [f"f{i}" for i in range(X_flat.shape[1])]
+
+
+def generate_feature_names(seq_len, columns):
+    return [col for _ in range(seq_len) for col in columns]
+
+csv_columns_1 = pd.read_csv(os.path.join(DATA_DIR, "session31_1.csv"), nrows=1).columns.tolist()
+full_feature_names = generate_feature_names(SEQUENCE_LENGTH, csv_columns_1)
+
+aggregated = defaultdict(float)
+for i, imp in enumerate(importances):
+    name_base = full_feature_names[i]
+    aggregated[name_base] += imp
+
+
+# Select top K features
+top_k = 30
+agg_sorted = sorted(aggregated.items(), key=lambda x: x[1], reverse=True)[:top_k]
+
+agg_names = [name for name, _ in agg_sorted]
+agg_values = [imp for _, imp in agg_sorted]
+
+# --- Plot ---
+plt.figure(figsize=(10, 8))
+sns.barplot(x=agg_values, y=agg_names, palette='viridis')
+plt.title("Top Feature Importances (Random Forest)")
+plt.xlabel("Importance")
+plt.ylabel("Feature")
+plt.tight_layout()
+plt.show()
 
 # --- Model ---
 model = Sequential()
