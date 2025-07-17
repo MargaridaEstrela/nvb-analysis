@@ -17,7 +17,7 @@ from sklearn.utils.class_weight import compute_class_weight
 from sklearn.ensemble import RandomForestClassifier
 
 from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, Input, GlobalAveragePooling1D, TimeDistributed, LayerNormalization
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, Input, GlobalAveragePooling1D, TimeDistributed, LayerNormalization, GlobalMaxPooling1D
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.metrics import AUC, Precision, Recall
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
@@ -25,18 +25,18 @@ from tensorflow.keras.regularizers import l2
 
 # --- Config ---
 DATA_DIR = "/Users/margaridaestrela/Documents/projects/gaips/emoshow/experimental_studies/gaips/pose_metrics/"
-LABELS_FILE = "role_labels.json"
+LABELS_FILE = "unreliable_labels.json"
 SEQUENCE_LENGTH = 400
 STEP_SIZE = 200
 
-NUM_CLASSES = 3
+NUM_CLASSES = 2
 TOP_K = 40
 
 EPOCHS = 25
 PATIENCE = 10
 BATCH_SIZE = 64
 
-ACCURACY_ACCEPTANCE_THRESHOLD = 0.62
+ACCURACY_ACCEPTANCE_THRESHOLD = 0.77
 
 
 # --- Fit scaler for each person ---
@@ -146,8 +146,8 @@ def curriculum_training(X_train, y_train, X_val, y_val, frame_limits, train_para
         hist = model.fit(
             Xt, yt,
             validation_data=(Xv, yv),
-            epochs=train_params.get('epochs',EPOCHS),
-            batch_size=train_params.get('batch_size',BATCH_SIZE),
+            epochs=train_params.get('epochs', EPOCHS),
+            batch_size=train_params.get('batch_size', BATCH_SIZE),
             **train_params.get('fit_kwargs',{})
         )
         
@@ -166,8 +166,8 @@ def build_lstm_model(input_shape):
             LayerNormalization(),
             Bidirectional(LSTM(32, return_sequences=True)),
             LayerNormalization(),
-            GlobalAveragePooling1D(), Dropout(0.1),
-            Dense(32, activation='relu', kernel_regularizer=l2(3e-4)), Dropout(0.2),
+            GlobalAveragePooling1D(), Dropout(0.2),
+            Dense(32, activation='relu', kernel_regularizer=l2(3e-4)), Dropout(0.3),
             Dense(NUM_CLASSES, activation='softmax')
         ])
         
@@ -268,6 +268,7 @@ def main():
     plt.legend(handles=patches, title="Feature Group")
 #    plt.show()
 
+    max_retries = 10
     while(True):
         # --- LSTM Training ---
         model = build_lstm_model((SEQUENCE_LENGTH, X_train.shape[2]))
@@ -296,6 +297,7 @@ def main():
         print("\nConfusion Matrix:")
         print(confusion_matrix(y_true_classes, y_pred_classes))
         
+        
         if report['accuracy'] < ACCURACY_ACCEPTANCE_THRESHOLD:
             print(f"Accuracy too low ({report['accuracy']:.2f}), retraining...")
             continue  # Retry if accuracy is too low
@@ -319,25 +321,6 @@ def main():
         plt.ylabel('Loss')
         plt.legend()
         plt.grid(True)
-        plt.tight_layout()
-        plt.show()
-        
-        y_train_pred = model.predict(X_train)
-        y_train_classes = np.argmax(y_train_pred, axis=1)
-        train_correct = (y_train_classes == y_train).astype(int)
-        df_train = pd.DataFrame({
-            'start': starts_train,
-            'correct': train_correct
-        })
-        df_train = df_train.sort_values('start')
-        
-        plt.figure(figsize=(12, 4))
-        plt.plot(df_train['start'], df_train['correct'], label='Train Accuracy', linewidth=2)
-        plt.xlabel('Start Frame of Window')
-        plt.ylabel('Prediction Accuracy')
-        plt.title('Model Accuracy over Time on Training Set')
-        plt.grid(True)
-        plt.legend()
         plt.tight_layout()
         plt.show()
 
