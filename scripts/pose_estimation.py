@@ -132,8 +132,8 @@ def metrics_per_round(results_path, time_window_csv):
         if first_start is None:
             first_start = start
 
-        d0 = pose0[(pose0['frame'] >= first_start) & (pose0['frame'] < end)]
-        d1 = pose1[(pose1['frame'] >= first_start) & (pose1['frame'] < end)]
+        d0 = pose0[(pose0['frame'] >= start) & (pose0['frame'] < end)]
+        d1 = pose1[(pose1['frame'] >= start) & (pose1['frame'] < end)]
 
         if d0.empty or d1.empty:
             print(f"Skipping {label}: no data in range.")
@@ -167,7 +167,7 @@ def metrics_per_round(results_path, time_window_csv):
 
 def metrics(results_path, time_window=None):
     """
-    Computes metrics for the poses stored in the results path.
+    Computes metrics for poses.
     If a time window is provided, it reads the frame windows from the CSV file.
     """
     pose0_csvPath = results_path / "pose0_processed.csv"
@@ -179,15 +179,17 @@ def metrics(results_path, time_window=None):
     frame_windows = read_frame_windows(time_window) if time_window is not None else None
 
     metrics = PoseMetrics(pose0, pose1, results_path, window_frames=frame_windows)
-    metrics.compute_all_metrics()
-    metrics.print_metrics()
-
-    metrics.plot_shoulders_vector_angle()
-    metrics.plot_upper_body_frame(frame=1000)
-    metrics.plot_participants_delta_distance()
-    metrics.plot_delta_displacement_keypoints()
-    metrics.plot_speed_over_time()
-
+    # metrics.compute_all_metrics()
+    # metrics.print_metrics()
+    
+    metrics.plot_upper_body_frame(frame=3000)
+    metrics.export_skeleton_frames_and_video()
+    # metrics.plot_shoulders_vector_angle()
+    # metrics.plot_upper_body_frame(frame=1000)
+    # metrics.plot_participants_delta_distance()
+    # metrics.plot_delta_displacement_keypoints()
+    # metrics.plot_speed_over_time()
+    
 def plot_metric_step_graph(all_metrics, key, save_path):
     labels = sorted(all_metrics.keys(), key=lambda l: all_metrics[l]['frame_start'])
     steps = [(all_metrics[label]['frame_start'], all_metrics[label][key]) for label in labels]
@@ -287,6 +289,7 @@ def main():
     
     data_path = Path(sys.argv[1])
     session_id = sys.argv[2]
+    print(f"Processing session: {session_id}")
     results_path = data_path / session_id / "results"
 
     ## [Step 1]: extract mediapipe skeletons and track poses (uncomment as needed)
@@ -297,9 +300,9 @@ def main():
     # pose0_3D, pose1_3D = apply_filters(data_path, session_id)
 
     ## [Step 3]: compute metrics (uncomment as needed)
-    # figures_path = data_path / session_id / "results" / "figures"
-    # if not figures_path.exists():
-    #     figures_path.mkdir(parents=True, exist_ok=True)
+    figures_path = data_path / session_id / "results" / "figures"
+    if not figures_path.exists():
+        figures_path.mkdir(parents=True, exist_ok=True)
 
     # metrics(results_path)
 

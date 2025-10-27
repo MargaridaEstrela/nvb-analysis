@@ -1,5 +1,12 @@
+import sys
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import plotly.graph_objects as go
+
+from pathlib import Path
+from mpl_toolkits.mplot3d import Axes3D
+import mpld3
 
 class KeypointPlotter:
     def __init__(self, data):
@@ -82,3 +89,78 @@ class KeypointPlotter:
             plt.close(fig)
         else:
             plt.show()
+            
+
+    def make_frame_traces(self, df_frame: pd.DataFrame):
+        traces = []
+        # Lines
+        for idx, (a, b) in enumerate(self.connections):
+            for pose_id in sorted(df_frame["pose"].unique()):
+                pose = df_frame[df_frame["pose"] == pose_id]
+                p1 = pose[pose["keypoint"] == a]
+                p2 = pose[pose["keypoint"] == b]
+                if p1.empty or p2.empty:
+                    continue
+                x = [float(p1["x"].values[0]), float(p2["x"].values[0])]
+                y = [float(p1["y"].values[0]), float(p2["y"].values[0])]
+                z = [float(p1["z"].values[0]), float(p2["z"].values[0])]
+                traces.append(
+                    go.Scatter3d(
+                        x=x, y=y, z=z,
+                        mode="lines",
+                        line=dict(width=5, color=self.connection_colors[idx % len(self.connection_colors)]),
+                        showlegend=False, hoverinfo="skip",
+                    )
+                )
+        # Points
+        for pose_id in sorted(df_frame["pose"].unique()):
+            pose = df_frame[df_frame["pose"] == pose_id]
+            traces.append(
+                go.Scatter3d(
+                    x=pose["x"], y=pose["y"], z=pose["z"],
+                    mode="markers+text",
+                    marker=dict(size=3, color="white", line=dict(width=1, color="black")),
+                    text=[str(int(k)) for k in pose["keypoint"]],
+                    textposition="top center",
+                    textfont=dict(size=8, color="blue"),
+                    name=f"pose {pose_id}",
+                    showlegend=False,
+                )
+            )
+        return traces
+
+    def plotly_figure_for_frame(self, frame: int) -> go.Figure:
+        df_f = self.data[self.data["frame"] == frame]
+        if df_f.empty:
+            raise ValueError(f"No data for frame {frame}. "
+                             f"Available frames: {sorted(self.data['frame'].unique())[:5]} ...")
+        fig = go.Figure(data=self.make_frame_traces(df_f))
+        fig.update_layout(
+            title=f"3D Skeletons — Frame {frame}",
+            scene=dict(
+                xaxis_title="X", yaxis_title="Y", zaxis_title="Z",
+                aspectmode="cube",
+                yaxis=dict(autorange="reversed"),  # to mimic image-style Y
+            ),
+            margin=dict(l=0, r=0, t=40, b=0),
+        )
+        return fig
+
+            
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python keypoint_plotter.py <data_file.csv>")
+        sys.exit(1)
+        
+    data_file = Path(sys.argv[1])
+    frame_number = 1000
+    output_html = Path("frame1000.html")
+
+    df = pd.read_csv(data_file)
+    plotter = KeypointPlotter(df)
+    fig = plotter.plotly_figure_for_frame(frame_number)
+    fig.write_html(str(output_html), include_plotlyjs="cdn", full_html=True)
+    print(f"[OK] Saved HTML to {output_html}")
+    
+if __name__ == "__main__":
+    main()

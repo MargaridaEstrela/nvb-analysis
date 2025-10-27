@@ -1,7 +1,13 @@
+import os
+import cv2
 import numpy as np
 import pandas as pd
+import imageio.v2 as imageio
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
+import plotly.io as pio
+
+from tqdm import tqdm
 
 class PoseMetrics:
     """
@@ -22,8 +28,8 @@ class PoseMetrics:
         self.window_frames = window_frames
 
         # Convert dataframes to centimeters
-        self.data0[['x', 'y', 'z']] *= 100
-        self.data1[['x', 'y', 'z']] *= 100
+        # self.data0[['x', 'y', 'z']] *= 100
+        # self.data1[['x', 'y', 'z']] *= 100
 
         # Metrics initialization
         self.inter_dist = None
@@ -452,41 +458,48 @@ class PoseMetrics:
     def _compute_mean_jerk(self, data, pose_id, fs=30.0):
         """
         Computes RMS jerk per keypoint and average jerk per frame.
+        Returns a dict with per-keypoint RMS jerk and 'overall' mean jerk across frames.
         """
         results = {}
-        jerk_matrix = []
+        jerk_series = []  # list of 1D arrays (per-keypoint)
 
         for kpt_id, kpt_name in self.keypoints_dict().items():
             coords = data[data['keypoint'] == kpt_id][['x', 'y', 'z']].values
             coords = np.asarray(coords, dtype=np.float64)
             coords = coords[~np.isnan(coords).any(axis=1)]
 
-            if len(coords) < 4:
+            if coords.shape[0] < 4:
                 results[kpt_name] = np.nan
                 continue
 
-            # Third derivative (jerk)
-            jerk = np.diff(coords, n=3, axis=0) * (fs ** 3)
-            jerk_magnitude = np.linalg.norm(jerk, axis=1)  # shape: (n_frames - 3,)
+            jerk = np.diff(coords, n=3, axis=0) * (fs ** 3)     # (n-3, 3)
+            jerk_mag = np.linalg.norm(jerk, axis=1)             # (n-3,)
 
-            rms_jerk = np.sqrt(np.mean(jerk_magnitude ** 2))
-            results[kpt_name] = float(rms_jerk)
+            rms_jerk = float(np.sqrt(np.mean(jerk_mag ** 2)))
+            results[kpt_name] = rms_jerk
 
-            # Pad with 0s to align with full frame count (start with 3 0s)
-            jerk_padded = np.concatenate(([0.0] * 3, jerk_magnitude))
-            jerk_matrix.append(jerk_padded)
+            # Pad the first 3 frames with NaN so they're ignored in per-frame mean
+            jerk_padded = np.concatenate((np.full(3, np.nan), jerk_mag))
+            jerk_series.append(jerk_padded)
 
-        # Compute per-frame mean jerk (across keypoints)
-        jerk_matrix = np.array(jerk_matrix)  # shape: (n_keypoints, n_frames)
-        mean_jerk_per_frame = np.nanmean(jerk_matrix, axis=0)
+        if len(jerk_series) == 0:
+            mean_jerk_per_frame = np.array([], dtype=float)
+        else:
+            max_len = max(arr.shape[0] for arr in jerk_series)
+            padded = []
+            for arr in jerk_series:
+                if arr.shape[0] < max_len:
+                    arr = np.concatenate((arr, np.full(max_len - arr.shape[0], np.nan)))
+                padded.append(arr)
+            jerk_matrix = np.vstack(padded)                      # (n_keypoints, max_len)
+            mean_jerk_per_frame = np.nanmean(jerk_matrix, axis=0)
 
         if pose_id == 0:
             self.jerk_0 = mean_jerk_per_frame
         elif pose_id == 1:
             self.jerk_1 = mean_jerk_per_frame
 
-        results['overall'] = float(np.nanmean(mean_jerk_per_frame)) if len(mean_jerk_per_frame) > 0 else np.nan
-
+        results['overall'] = float(np.nanmean(mean_jerk_per_frame)) if mean_jerk_per_frame.size > 0 else np.nan
         return results
 
     # -------------------------------------------------------------------------
@@ -569,7 +582,9 @@ class PoseMetrics:
             'Speed SD (m/s)',
             'Mean Jerk (m/s^3)',
         ]
-        df = df.round(3)
+        df = df.round(4)
+        
+        df.T.to_csv(f"{self.results_path}/session_metrics.csv")
 
         print("\n📊 Summary of Pose Metrics:")
         print(df)
@@ -585,19 +600,19 @@ class PoseMetrics:
             'ΔDistance (initial - final) (m)',
             'Inward Movement Pose (0 or 1)',
         ]
-        _df = _df.round(3)
+        _df = _df.round(4)
         print("\n📊 Other Metrics:")
         print(_df)
 
         df0 = pd.DataFrame(self.disp0).T.rename(columns={
             'mean_dx': 'Mean ΔX (m)', 'mean_dy': 'Mean ΔY (m)', 'mean_dz': 'Mean ΔZ (m)',
             'amp_dx': 'Amp ΔX (m)', 'amp_dy': 'Amp ΔY (m)', 'amp_dz': 'Amp ΔZ (m)'
-        }).dropna().round(4)
+        }).dropna()
 
         df1 = pd.DataFrame(self.disp1).T.rename(columns={
             'mean_dx': 'Mean ΔX (m)', 'mean_dy': 'Mean ΔY (m)', 'mean_dz': 'Mean ΔZ (m)',
             'amp_dx': 'Amp ΔX (m)', 'amp_dy': 'Amp ΔY (m)', 'amp_dz': 'Amp ΔZ (m)'
-        }).dropna().round(4)
+        }).dropna()
 
         print("\n📍 Displacement per Keypoint — Pose 0:")
         print(df0)
@@ -794,7 +809,7 @@ class PoseMetrics:
             plt.savefig(save_path, dpi=300)
             plt.close()
 
-    def plot_upper_body_frame(self, frame=1000):
+    def plot_upper_body_frame(self, frame=5000):
         keypoints = self.keypoints_dict()
         connections = self.skeleton_connections()
 
@@ -852,19 +867,13 @@ class PoseMetrics:
 
         fig.update_layout(
             scene=dict(
-                xaxis=dict(title="X", range=[x_max + x_pad, x_min - x_pad]),  # Invert X
-                yaxis=dict(title="Y", range=[y_min - y_pad, y_max + y_pad]),
-                zaxis=dict(title="Z", range=[z_min - z_pad, z_max + z_pad]),
+                xaxis=dict(title="X", range=[x_max + x_pad, x_min - x_pad], visible=False),  # Invert X
+                yaxis=dict(title="Y", range=[y_min - y_pad, y_max + y_pad], visible=False),
+                zaxis=dict(title="Z", range=[z_min - z_pad, z_max + z_pad], visible=False),
                 aspectmode='data'
             ),
             margin=dict(l=0, r=0, b=0, t=20),
-            legend=dict(
-                x=0.02, y=0.98,
-                xanchor='left', yanchor='top',
-                bgcolor='rgba(255,255,255,0.6)',
-                bordercolor='black',
-                borderwidth=1
-            ),
+            showlegend=False,
             scene_camera=dict(
                 eye=dict(x=0.0, y=0.5, z=-2.5),
                 up=dict(x=0, y=1, z=0)  # Set Y as up, instead of default Z
@@ -874,3 +883,90 @@ class PoseMetrics:
         # Export to HTML
         file_path = f"{self.results_path}/figures/skeleton_3D_frame_{frame}.html"
         fig.write_html(file_path, auto_open=False)
+        
+    def export_skeleton_frames_and_video(self, out_name="skeletons.mp4",
+                                        min_frame=200, max_frame=600,
+                                        step=10, fps=30, out_dir=None):
+        """
+        Export skeleton frames as PNG (Plotly) and merge into a video.
+        """
+
+        keypoints = self.keypoints_dict()
+        connections = self.skeleton_connections()
+
+        # ✅ Only frames where both skeletons exist in the range
+        frames = sorted(set(self.data0['frame']).intersection(set(self.data1['frame'])))
+        frames = [f for f in frames if min_frame <= f <= max_frame][::step]
+        if not frames:
+            print("⚠️ No common frames found in given range!")
+            return
+
+        if out_dir is None:
+            out_dir = f"{self.results_path}/figures/frames"
+        os.makedirs(out_dir, exist_ok=True)
+
+        # --- Global axis limits
+        df_all = pd.concat([self.data0[['x','y','z']], self.data1[['x','y','z']]]).dropna()
+        margin_factor = 0.1
+        x_min, x_max = df_all['x'].min(), df_all['x'].max()
+        y_min, y_max = df_all['y'].min(), df_all['y'].max()
+        z_min, z_max = df_all['z'].min(), df_all['z'].max()
+        x_pad, y_pad, z_pad = (x_max-x_min)*margin_factor, (y_max-y_min)*margin_factor, (z_max-z_min)*margin_factor
+
+        def plot_skeleton(fig, data, frame, color):
+            df = data[data['frame'] == frame]
+            if df.empty:
+                return
+            coords = {k: df[df['keypoint'] == k][['x','y','z']].values[0]
+                    for k in keypoints if not df[df['keypoint'] == k].empty}
+            if not coords:
+                return
+            # joints
+            x, y, z = zip(*coords.values())
+            fig.add_trace(go.Scatter3d(x=x, y=y, z=z,
+                                    mode="markers",
+                                    marker=dict(size=5, color=color)))
+            # bones
+            for a, b in connections:
+                if a in coords and b in coords:
+                    xa, ya, za = coords[a]
+                    xb, yb, zb = coords[b]
+                    fig.add_trace(go.Scatter3d(x=[xa, xb], y=[ya, yb], z=[za, zb],
+                                            mode="lines",
+                                            line=dict(color=color, width=3),
+                                            showlegend=False))
+
+        img_paths = []
+        for frame in frames:
+            fig = go.Figure()
+            plot_skeleton(fig, self.data0, frame, "blue")
+            plot_skeleton(fig, self.data1, frame, "orange")
+
+            fig.update_layout(
+                scene=dict(
+                    xaxis=dict(range=[x_max+x_pad, x_min-x_pad], visible=False),  # invert X
+                    yaxis=dict(range=[y_min-y_pad, y_max+y_pad], visible=False),
+                    zaxis=dict(range=[z_min-z_pad, z_max+z_pad], visible=False),
+                    aspectmode="data"
+                ),
+                margin=dict(l=0, r=0, b=0, t=0),
+                showlegend=False,
+                scene_camera=dict(eye=dict(x=0.0, y=0.5, z=-2.5), up=dict(x=0,y=1,z=0))
+            )
+
+            img_path = os.path.join(out_dir, f"frame_{frame:05d}.png")
+            img_bytes = pio.to_image(fig, format="png", scale=2, engine="kaleido")
+            with open(img_path, "wb") as f:
+                f.write(img_bytes)
+            img_paths.append(img_path)
+
+        # --- Merge into video
+        img0 = cv2.imread(img_paths[0])
+        h, w, _ = img0.shape
+        out_path = os.path.join(self.results_path, "figures", out_name)
+        video = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+        for p in img_paths:
+            video.write(cv2.imread(p))
+        video.release()
+
+        print(f"✅ Exported {len(img_paths)} frames → {out_path}")

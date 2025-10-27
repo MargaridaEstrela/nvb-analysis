@@ -1,7 +1,7 @@
 clear; close all; clc;
 
 %% Load Gaze Data
-session_path = '../../../experimental_studies/gaips/1/';
+session_path = '../../../experimental_studies/gaips/30/';
 data = readtable(fullfile(session_path, 'results/top_tracked.csv'));
 
 %% Load Video and Select Positions
@@ -13,7 +13,7 @@ firstFrame = readFrame(video);
 frame_width = 1920;
 frame_height = 1080;
 
-target_radius = 150; % Adjust as needed
+target_radius = 170; % Adjust as needed
 
 figures_path = fullfile(session_path, 'results/figures');
 if ~isfolder(figures_path)
@@ -40,8 +40,7 @@ close;
 %% Filter rows based on confidence
 data = data(data.confidence >= 0.5, :);
 
-%% Face Centers (average of landmarks 27, 30, 33, 36, 39, 42, 45)
-landmarks = [27, 30, 33, 36, 39, 42, 45];
+landmarks = [8, 11, 14, 17, 36, 39, 42, 45];
 facepos = zeros(2,2);  % rows = [x,y] for tracked_id = 0 and 1
 
 
@@ -168,7 +167,7 @@ for i = 1:height(data)
     theta_x = gaze_angle(1);
     theta_y = gaze_angle(2);
     gaze_direction = [tan(theta_x), tan(theta_y)];
-    gaze_direction = gaze_direction / norm(gaze_direction);
+    % gaze_direction = gaze_direction / norm(gaze_direction);
 
     if data.tracked_id(i) == 0
         gaze_direction_0(j, :) = gaze_direction;
@@ -176,8 +175,8 @@ for i = 1:height(data)
         gaze_direction_1(j, :) = gaze_direction;
     end
 
-    intersects_robot = ray_sphere_intersection(eye_center, gaze_direction, robot_position, target_radius);
-    intersects_other = ray_sphere_intersection(eye_center, gaze_direction, other_position, target_radius);
+    intersects_robot = ray_circle_intersection(eye_center, gaze_direction, robot_position, target_radius);
+    intersects_other = ray_circle_intersection(eye_center, gaze_direction, other_position, target_radius);
 
     if intersects_robot
         gaze_classification(i) = "Looking at the Robot";
@@ -262,7 +261,10 @@ end
 % Extract Facial Action Units
 au_columns = {'frame', 'AU01_r', 'AU02_r', 'AU04_r', 'AU05_r', 'AU06_r', ...
               'AU07_r','AU09_r', 'AU10_r', 'AU12_r', 'AU14_r', 'AU15_r', ...
-              'AU17_r','AU20_r', 'AU23_r', 'AU25_r', 'AU26_r', 'AU45_r'};
+              'AU17_r','AU20_r', 'AU23_r', 'AU25_r', 'AU26_r', 'AU45_r', ...
+              'AU01_c','AU02_c', 'AU04_c', 'AU05_c', 'AU06_c', 'AU07_c',...
+              'AU09_c','AU10_c', 'AU12_c', 'AU14_c', 'AU15_c', 'AU17_c',...
+              'AU20_c','AU23_c', 'AU25_c', 'AU26_c', 'AU45_c'};
 
 au_0 = data(data.tracked_id == 0, :);
 au_1 = data(data.tracked_id == 1, :);
@@ -327,14 +329,6 @@ proportions_0 = counts_0 / sum(counts_0);
 % Count and normalize for Participant 1
 counts_1 = countcats(categorical(gaze_classification_1, gaze_labels));
 proportions_1 = counts_1 / sum(counts_1);
-
-% % Set maximum
-% max_y = max([sum(gaze_classification_0 == "Looking Elsewhere"), ...
-%              sum(gaze_classification_0 == "Looking at the Robot"), ...
-%              sum(gaze_classification_0 == "Looking at other Person"), ...
-%              sum(gaze_classification_1 == "Looking Elsewhere"), ...
-%              sum(gaze_classification_1 == "Looking at the Robot"), ...
-%              sum(gaze_classification_1 == "Looking at other Person")]) + 100;
 
 % Histogram for Participant 0
 ax1 = subplot(1, 2, 1);
@@ -419,19 +413,21 @@ for i = 1:30:height(data)  % Adjust step size to prevent clutter
         if j > size(gaze_positions_0, 1), continue; end
         gaze_start = gaze_positions_0(j, :);
         gaze_angle = gaze_angle_0(j, :);
+        gaze_dir = gaze_direction_0(j, :);
         arrow_color = 'b'; % Blue for Participant 0
     elseif data.tracked_id(i) == 1
         if j > size(gaze_positions_1, 1), continue; end
         gaze_start = gaze_positions_1(j, :);
         gaze_angle = gaze_angle_1(j, :);
+        gaze_dir = gaze_direction_1(j, :);
         arrow_color = 'g'; % Green for Participant 1
     else
         continue; % Skip invalid tracked_id
     end
 
     % Fix coordinate system for correct projection
-    gaze_dir_x = arrow_scale * sin(gaze_angle(1)); % Swap cos/sin
-    gaze_dir_y = -arrow_scale * sin(gaze_angle(2)); % Invert Y for image
+    gaze_dir_x = arrow_scale * gaze_dir(1); % Swap cos/sin
+    gaze_dir_y = arrow_scale * gaze_dir(2); % Invert Y for image
 
     % Plot the gaze direction arrow and store the handle for legend
     h_gaze = [h_gaze, quiver(gaze_start(1), gaze_start(2), gaze_dir_x, gaze_dir_y, ...
@@ -463,7 +459,7 @@ saveas(fig2, output_file);
 
 %% Auxiliary Functions 
 % Function to Check Ray-Sphere Intersection
-function intersects = ray_sphere_intersection(ray_origin, ray_dir, sphere_center, sphere_radius)
+function intersects = ray_circle_intersection(ray_origin, ray_dir, sphere_center, sphere_radius)
     % Vector from ray origin to sphere center
     oc = ray_origin - sphere_center;
 
